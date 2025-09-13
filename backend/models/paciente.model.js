@@ -1,5 +1,7 @@
 module.exports = (sequelize, DataTypes) => {
   const Paciente = sequelize.define('Paciente', {
+
+    
     nombres: {
       type: DataTypes.STRING,
       allowNull: false
@@ -61,7 +63,18 @@ module.exports = (sequelize, DataTypes) => {
       validate: {
         isIn: [['M', 'F']]
       }
+    },
+    createdAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    },
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
     }
+  
   }, {
     timestamps: true  // ✅ esto habilita createdAt y updatedAt
   });

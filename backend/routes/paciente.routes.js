@@ -2,8 +2,12 @@ const express = require('express');
 const router = express.Router();
 const pacienteController = require('../controllers/paciente.controller');
 
-// Asegúrate de que TODAS estas funciones estén exportadas en paciente.controller.js
+// Rutas específicas PRIMERO
+router.get('/buscar', pacienteController.buscarConFiltros);
+router.get('/debug-fecha', pacienteController.debugPacientesPorFecha);
 router.get('/verificar-existencia', pacienteController.verificarExistencia);
+
+// Rutas con parámetros DESPUÉS
 router.get('/:id', pacienteController.obtenerPacientePorId);
 router.get('/', pacienteController.obtenerPacientes);
 router.post('/', pacienteController.crearPaciente);
