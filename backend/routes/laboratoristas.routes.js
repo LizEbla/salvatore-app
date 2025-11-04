@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const controlador = require('../controllers/laboratorista.controller');
 
 const {
   crearLaboratorista,
@@ -8,35 +7,29 @@ const {
   editarLaboratoristas,
   eliminarLaboratorista,
   obtenerLaboratoristasPorId,
-  verificarCedulaDuplicada, // 👈 Asegúrate de incluir esta
-    verificarUsuarioDuplicado // ✅ Asegúrate de importar esta función
-
+  verificarCedulaDuplicada,
+  verificarUsuarioDuplicado
 } = require('../controllers/laboratorista.controller');
 
-
 // Crear laboratorista
-router.post('/', controlador.crearLaboratorista);
+router.post('/', crearLaboratorista);
 
-// Listar todos
-router.get('/listar', controlador.listarLaboratoristas);
+// Listar todos (con paginación y búsqueda si tu controlador lo soporta)
+router.get('/listar', listarLaboratoristas);
 
-// Obtener uno por ID
-router.get('/:id', controlador.obtenerLaboratoristasPorId);
-
-// Editar
-router.put('/:id', controlador.editarLaboratoristas);
-
-// Eliminar
-router.delete('/:id', controlador.eliminarLaboratorista);
-
-//verificar cedula
+// Verificar cédula duplicada
 router.get('/verificar-cedula/:cedula', verificarCedulaDuplicada);
 
-//verifica usuario duplicado
+// Verificar usuario duplicado
 router.get('/verificar-usuario/:usuario', verificarUsuarioDuplicado);
 
+// Obtener uno por ID
 router.get('/:id', obtenerLaboratoristasPorId);
 
+// Editar
+router.put('/:id', editarLaboratoristas);
 
+// Eliminar
+router.delete('/:id', eliminarLaboratorista);
 
 module.exports = router;

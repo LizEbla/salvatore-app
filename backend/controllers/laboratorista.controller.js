@@ -1,32 +1,36 @@
 const { DataTypes, Op } = require('sequelize');
 const bcrypt = require('bcrypt');
 const sequelize = require('../config/db');
-const Laboratorista = require('../models/Laboratorista')(sequelize, DataTypes);
+const db = require('../models');
 
+const Laboratorista = db.Laboratorista;
+const Sucursal = db.Sucursal;
 
-
-// Crear un nuevo laboratorista
 exports.crearLaboratorista = async (req, res) => {
   try {
-    const { nombres, apellidos, cedula, celular, correo, usuario, contrasena } = req.body;
+    const { nombres, apellidos, cedula, celular, correo, usuario, contrasena, sucursalId } = req.body;
+
+    console.log("📝 Datos recibidos:", {
+      nombres, apellidos, cedula, usuario, sucursalId
+    });
 
     if (!nombres || !apellidos || !cedula || !celular || !correo || !usuario || !contrasena) {
       return res.status(400).json({ message: 'Todos los campos son obligatorios.' });
     }
 
+    // Verificar duplicados
     const existeCedula = await Laboratorista.findOne({ where: { cedula } });
-    if (existeCedula) {
-      return res.status(400).json({ message: 'La cédula ya está registrada.' });
-    }
+    if (existeCedula) return res.status(400).json({ message: 'La cédula ya está registrada.' });
 
     const existeUsuario = await Laboratorista.findOne({ where: { usuario } });
-    if (existeUsuario) {
-      return res.status(400).json({ message: 'El nombre de usuario ya está en uso.' });
-    }
+    if (existeUsuario) return res.status(400).json({ message: 'El usuario ya está en uso.' });
 
-    // ✅ Encriptar la contraseña antes de guardar
+    // Hashear contraseña
     const hashedPassword = await bcrypt.hash(contrasena, 10);
 
+    
+
+    // Crear laboratorista con relación a sucursal
     const nuevo = await Laboratorista.create({
       nombres,
       apellidos,
@@ -34,20 +38,33 @@ exports.crearLaboratorista = async (req, res) => {
       celular,
       correo,
       usuario,
-      contrasena: hashedPassword
+      contrasena: hashedPassword,
+      sucursalId: sucursalId || null
+    }, 
+);
+
+    // ✅ Aquí no uses "nombreSucursal" porque no existe en la BD todavía
+    console.log("✅ Laboratorista creado:", nuevo.usuario, "SucursalId:", nuevo.sucursalId);
+
+    
+
+    res.status(201).json({
+      success: true,
+      data: nuevo,
+      mensaje: 'Laboratorista creado correctamente'
     });
 
-    res.status(201).json(nuevo);
   } catch (error) {
-    console.error('Error al crear laboratorista:', error);
-    res.status(500).json({ message: 'Error interno del servidor.' });
+    console.error('💥 Error al crear laboratorista:', error);
+    res.status(500).json({ message: 'Error interno del servidor: ' + error.message });
   }
 };
 
 
 
+// En el MISMO archivo laboratorista.controller.js
 
-// Editar un laboratorista por ID
+// Editar un laboratorista por ID - VERSIÓN CORREGIDA
 exports.editarLaboratoristas = async (req, res) => {
   try {
     const id = req.params.id;
@@ -74,7 +91,7 @@ exports.editarLaboratoristas = async (req, res) => {
     laboratorista.correo = correo;
     laboratorista.usuario = usuario;
 
-    // Si se desea cambiar la contraseña
+    // ✅ SIEMPRE HASHEAR SI SE CAMBIA LA CONTRASEÑA
     if (contrasena && contrasena.trim() !== '') {
       const hashedPassword = await bcrypt.hash(contrasena, 10);
       laboratorista.contrasena = hashedPassword;
@@ -158,6 +175,8 @@ exports.verificarUsuarioDuplicado = async (req, res) => {
 };
 
 
+
+
 // Listar laboratoristas con paginación y búsqueda, usando los parámetros del frontend
 exports.listarLaboratoristas = async (req, res) => {
   try {
@@ -176,7 +195,15 @@ exports.listarLaboratoristas = async (req, res) => {
       },
       limit: parseInt(limite),
       offset: offset,
-      order: [['createdAt', 'DESC']]
+      order: [['createdAt', 'DESC']],
+      include: [
+    {
+      model: Sucursal,
+      as: 'Sucursal',
+      attributes: ['id', 'nombre', 'ciudad']
+    }
+
+  ]
     });
 
     res.status(200).json({

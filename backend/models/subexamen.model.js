@@ -1,41 +1,88 @@
+// models/subexamen.model.js
 module.exports = (sequelize, DataTypes) => {
   const Subexamen = sequelize.define('Subexamen', {
-    nombre: {
-      type: DataTypes.STRING(500),
-      allowNull: false
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
     },
-    precio: {
-      type: DataTypes.DECIMAL(10, 2),
-      allowNull: false
+    nombre: { 
+      type: DataTypes.STRING, 
+      allowNull: false 
     },
-
-    tipoPrecio: {
-      type: DataTypes.STRING, // ✅ Asegúrate de que exista esta línea
+    examen_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: {
+        model: 'Examenes', // nombre de la tabla en la BD
+        key: 'id'
+      }
+    },
+    precio: { 
+      type: DataTypes.DECIMAL(10, 2), 
+      allowNull: true 
+    },
+    tipoPrecio: { 
+      type: DataTypes.STRING, 
+      allowNull: true 
+    },
+    tipoMuestra: { 
+      type: DataTypes.TEXT 
+    },
+    tipoTubo: { 
+      type: DataTypes.STRING(255), 
+      allowNull: true 
+    },
+    tiempoEntrega: { 
+      type: DataTypes.STRING(255), 
+      allowNull: true 
+    },
+    observaciones: { 
+      type: DataTypes.TEXT 
+    },
+    parametros: {
+      type: DataTypes.JSON, // Para almacenar parámetros específicos del subexamen
       allowNull: true
     },
-    
-    tipoMuestra: {
-      type: DataTypes.STRING(255)
+    orden: {
+      type: DataTypes.INTEGER, // Para ordenar los subexámenes
+      defaultValue: 0
     },
-    tipoTubo: {
-      type: DataTypes.STRING(255)
+    createdAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
     },
-    tiempoEntrega: {
-      type: DataTypes.STRING(255)
-    },
-    observaciones: {
-      type: DataTypes.STRING(2000), // ⬅️ Aumentamos el tamaño
-      allowNull: true
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
     }
+  }, {
+    tableName: 'Subexamenes',
+    timestamps: true,
+    indexes: [
+      {
+        fields: ['examen_id'] // Índice para mejorar rendimiento en búsquedas
+      }
+    ]
   });
 
-  Subexamen.associate = models => {
-    Subexamen.belongsTo(models.Examen, {
-      foreignKey: 'examen_id',
-      as: 'examen'
+  Subexamen.associate = function(models) {
+    // 🔹 ASOCIACIÓN CRÍTICA: Subexamen pertenece a Examen
+    Subexamen.belongsTo(models.Examen, { 
+      foreignKey: 'examen_id', 
+      as: 'Examen' 
+    });
+
+    
+
+    // 🔹 Si necesitas asociaciones adicionales con ExamenPacienteDetalle
+    Subexamen.hasMany(models.ExamenPacienteDetalle, {
+      foreignKey: 'subexamenId',
+      as: 'DetallesPaciente'
     });
   };
 
   return Subexamen;
 };
-

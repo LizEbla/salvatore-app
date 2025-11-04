@@ -14,7 +14,7 @@ module.exports = (sequelize, DataTypes) => {
     tipoTubo: DataTypes.STRING,
     observaciones: DataTypes.STRING
   }, {
-    tableName: 'TipoExamens',
+    tableName: 'Tipoexamenes',
     timestamps: false
   });
 

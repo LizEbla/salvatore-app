@@ -79,5 +79,13 @@ module.exports = (sequelize, DataTypes) => {
     timestamps: true  // ✅ esto habilita createdAt y updatedAt
   });
 
+  Paciente.associate = function(models) {
+  Paciente.belongsToMany(models.Examen, {
+    through: 'PacienteExamen',
+    foreignKey: 'pacienteId',
+    as: 'Examenes'
+  });
+};
+
   return Paciente;
 };

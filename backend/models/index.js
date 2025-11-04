@@ -13,25 +13,31 @@ const db = {};
 db.Sequelize = Sequelize;
 db.sequelize = sequelize;
 
-// Importar modelos (orden importante)
+// ==========================
+// 📌 IMPORTACIÓN DE MODELOS
+// ==========================
 db.Laboratorista = require('./Laboratorista.js')(sequelize, Sequelize.DataTypes);
 db.Paciente = require('./paciente.model.js')(sequelize, Sequelize.DataTypes);
 db.Area = require('./area.model.js')(sequelize, Sequelize.DataTypes);
 db.Examen = require('./examen.model.js')(sequelize, Sequelize.DataTypes);
 db.Subexamen = require('./subexamen.model.js')(sequelize, Sequelize.DataTypes);
-
-// Definir relaciones
-db.Laboratorista.hasMany(db.Paciente, { foreignKey: 'laboratoristaId' });
-db.Paciente.belongsTo(db.Laboratorista, { foreignKey: 'laboratoristaId' });
-
-// Relaciones de jerarquía de exámenes
-db.Area.hasMany(db.Examen, { foreignKey: 'area_id' });
-db.Examen.belongsTo(db.Area, { foreignKey: 'area_id' });
-
-db.Examen.hasMany(db.Subexamen, { foreignKey: 'examen_id' });
-db.Subexamen.belongsTo(db.Examen, { foreignKey: 'examen_id' });
 db.TipoExamen = require('./tipoexamen.model.js')(sequelize, Sequelize.DataTypes);
-db.HistorialImportacion = require('./historialimportacion')(sequelize, Sequelize);
+db.HistorialImportacion = require('./historialimportacion.js')(sequelize, Sequelize.DataTypes);
+db.Promocion = require('./promocion.model.js')(sequelize, Sequelize.DataTypes);
+db.PromocionExamen = require('./promocionExamen.model.js')(sequelize, Sequelize.DataTypes);
+db.ExamenPaciente = require('./examenPaciente.model.js')(sequelize, Sequelize.DataTypes);
+db.ExamenPacienteDetalle = require('./examenPacienteDetalles.js')(sequelize, Sequelize.DataTypes);
+db.Sucursal = require('./sucursal.model.js')(sequelize, Sequelize.DataTypes);
 
+// ==========================
+// 📌 EJECUTAR ASOCIACIONES UNA SOLA VEZ
+// ==========================
+Object.keys(db).forEach(modelName => {
+  if (db[modelName].associate) {
+    db[modelName].associate(db);
+  }
+});
+
+console.log('✅ Todas las asociaciones configuradas correctamente');
 
 module.exports = db;
