@@ -11,12 +11,12 @@ SELECT
   s."tipoTubo",
   s."tiempoEntrega",
   s.observaciones
-FROM "Subexamens" s
-JOIN "Examens" e ON s.examen_id = e.id
+FROM "subexamenes" s
+JOIN "examenes" e ON s.examen_id = e.id
 JOIN "Areas" a ON e.area_id = a.id;
 
 
--- Exámenes planos desde "TipoExamens"
+-- Exámenes planos desde "Tipoexamenes"
 SELECT
   t.nombre AS examen,
   NULL AS subexamen,
@@ -26,11 +26,11 @@ SELECT
   t."tipoTubo",
   t."tiempoEntrega",
   t.observaciones
-FROM "TipoExamens" t
+FROM "Tipoexamenes" t
 
 UNION
 
--- Exámenes jerárquicos desde "Examens" y "Subexamens"
+-- Exámenes jerárquicos desde "examenes" y "subexamenes"
 SELECT
   e.nombre AS examen,
   s.nombre AS subexamen,
@@ -40,9 +40,9 @@ SELECT
   s."tipoTubo",
   s."tiempoEntrega",
   s.observaciones
-FROM "Examens" e
+FROM "examenes" e
 JOIN "Areas" a ON a.id = e.area_id
-LEFT JOIN "Subexamens" s ON s.examen_id = e.id
+LEFT JOIN "subexamenes" s ON s.examen_id = e.id
 WHERE s.nombre IS NOT NULL
 ORDER BY area, examen;
 
@@ -59,7 +59,7 @@ SELECT
   t."tipoTubo",
   t."tiempoEntrega",
   t.observaciones
-FROM "TipoExamens" t
+FROM "Tipoexamenes" t
 
 UNION
 
@@ -73,18 +73,18 @@ SELECT
   s."tipoTubo",
   s."tiempoEntrega",
   s.observaciones
-FROM "Examens" e
+FROM "examenes" e
 JOIN "Areas" a ON a.id = e.area_id
-JOIN "Subexamens" s ON s.examen_id = e.id;
+JOIN "subexamenes" s ON s.examen_id = e.id;
 
 
 
 SELECT * FROM vista_examenes_completa ORDER BY area, examen;
 
 
-SELECT COUNT(*) FROM "Subexamens";
+SELECT COUNT(*) FROM "subexamenes";
 
-SELECT COUNT(*) FROM "Examens";
+SELECT COUNT(*) FROM "examenes";
 
 SELECT COUNT(*) FROM "Areas";
 

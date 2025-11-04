@@ -1,9 +1,9 @@
 SELECT id, nombre, area, precio, "tipoMuestra", "tiempoEntrega", "tipoTubo", observaciones, "createdAt", "updatedAt", "tipoPrecio", subexamenes
-	FROM public."TipoExamens";
+	FROM public."Tipoexamenes";
 
 
 
-SELECT * FROM "TipoExamens";
+SELECT * FROM "Tipoexamenes";
 
 
 SELECT 
@@ -15,8 +15,8 @@ SELECT
   s.tipoTubo,
   s.tiempoEntrega,
   s.observaciones
-FROM "Subexamens" s
-JOIN "Examens" e ON s.examen_id = e.id
+FROM "subexamenes" s
+JOIN "examenes" e ON s.examen_id = e.id
 JOIN "Areas" a ON e.area_id = a.id
 ORDER BY a.nombre, e.nombre, s.nombre;
 
@@ -28,13 +28,13 @@ SELECT
   s."tipoTubo",
   s."tiempoEntrega",
   s."observaciones"
-FROM "Subexamens" s;
+FROM "subexamenes" s;
 
 
 SELECT a.nombre AS area, e.nombre AS examen, s.nombre AS subexamen, s.precio, s."tipoMuestra", s."tipoTubo", s."tiempoEntrega", s."observaciones"
 FROM "Areas" a
-JOIN "Examens" e ON e.area_id = a.id
-LEFT JOIN "Subexamens" s ON s.examen_id = e.id;
+JOIN "examenes" e ON e.area_id = a.id
+LEFT JOIN "subexamenes" s ON s.examen_id = e.id;
 
 
 
@@ -49,8 +49,8 @@ SELECT
   COALESCE(s."tiempoEntrega", e."tiempoEntrega") AS "tiempoEntrega",
   COALESCE(s."observaciones", e."observaciones") AS "observaciones"
 FROM "Areas" a
-JOIN "Examens" e ON e.area_id = a.id
-LEFT JOIN "Subexamens" s ON s.examen_id = e.id
+JOIN "examenes" e ON e.area_id = a.id
+LEFT JOIN "subexamenes" s ON s.examen_id = e.id
 ORDER BY area, examen;
 
 
@@ -62,11 +62,11 @@ CREATE TABLE historial_importaciones (
   usuario TEXT
 );
 
-SELECT * FROM TipoExamens;
+SELECT * FROM Tipoexamenes;
 
-SELECT * FROM "TipoExamens";
+SELECT * FROM "Tipoexamenes";
 
-SELECT DISTINCT area FROM "TipoExamens" ORDER BY area;
+SELECT DISTINCT area FROM "Tipoexamenes" ORDER BY area;
 
 select * from "Pacientes";
 
