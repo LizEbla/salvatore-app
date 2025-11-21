@@ -1,81 +1,92 @@
-// middleware/auth.js
 const jwt = require('jsonwebtoken');
-const { Laboratorista } = require('../models');
+const db = require('../models');
 
+const Laboratorista = db.Laboratorista;
+const Paciente = db.Paciente;
 
 const verificarAuth = async (req, res, next) => {
   try {
-    console.log('🔐 MIDDLEWARE AUTH - Verificando JWT...');
-    
-    // Obtener el token del header
     const authHeader = req.header('Authorization');
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('❌ No hay token JWT en el header');
+
+    if (!authHeader?.startsWith('Bearer ')) {
       return res.status(401).json({ mensaje: 'Token no proporcionado' });
     }
 
     const token = authHeader.replace('Bearer ', '');
-    
-    if (!token) {
-      console.log('❌ Token vacío');
-      return res.status(401).json({ mensaje: 'Token vacío' });
-    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'salvatore_secret_key');
 
-    // 🎫 VERIFICAR JWT REAL
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'clave-secreta-para-desarrollo');
-    console.log('✅ JWT VÁLIDO - Datos decodificados:', {
+    let usuarioFinal = {
       id: decoded.id,
-      usuario: decoded.usuario,
-      nombres: decoded.nombres,
-      expira: new Date(decoded.exp * 1000).toLocaleString()
-    });
+      tipoUsuario: decoded.tipoUsuario
+    };
 
-    // Si es usuario de BD real, verificar que aún existe
-    if (decoded.esUsuarioReal) {
-      const usuarioBD = await Laboratorista.findByPk(decoded.id, {
-        attributes: { exclude: ['contrasena'] }
-      });
-
-      if (!usuarioBD) {
-        console.log('❌ Usuario de BD ya no existe');
-        return res.status(401).json({ mensaje: 'Usuario no encontrado' });
-      }
-
-      req.user = {
-        id: usuarioBD.id,
-        nombres: usuarioBD.nombres,
-        apellidos: usuarioBD.apellidos,
-        usuario: usuarioBD.usuario,
-        tipoUsuario: 'laboratorista_bd'
+    // ============================================================
+    // 🔵 USUARIOS FIJOS - CORREGIDO: Asignar IDs numéricos válidos
+    // ============================================================
+    if (["administrador", "laboratorista", "paciente"].includes(decoded.tipoUsuario)) {
+      // ✅ CORREGIDO: Asignar IDs numéricos para usuarios fijos
+      const usuariosFijos = {
+        'administrador': { id: 1, nombres: 'Administrador', apellidos: 'Sistema' },
+        'laboratorista': { id: 2, nombres: 'Laboratorista', apellidos: 'General' },
+        'paciente': { id: 3, nombres: 'Paciente', apellidos: 'Invitado' }
       };
-    } else {
-      // Usuario simulado
-      req.user = {
-        id: decoded.id,
-        nombres: decoded.nombres,
-        apellidos: decoded.apellidos,
-        usuario: decoded.usuario,
-        tipoUsuario: 'usuario_simulado'
+      
+      const usuarioFijo = usuariosFijos[decoded.tipoUsuario];
+      if (usuarioFijo) {
+        usuarioFinal = {
+          id: usuarioFijo.id, // ✅ Ahora es un número
+          tipoUsuario: decoded.tipoUsuario,
+          nombres: usuarioFijo.nombres,
+          apellidos: usuarioFijo.apellidos,
+          usuario: decoded.tipoUsuario
+        };
+      }
+      
+      req.usuario = usuarioFinal;
+      return next();
+    }
+
+    // LABORATORISTA / ADMIN / SUPERADMIN
+    if (['laboratorista', 'administrador', 'superadmin'].includes(decoded.tipoUsuario)) {
+      const lab = await Laboratorista.findByPk(decoded.id);
+      if (!lab) return res.status(401).json({ mensaje: 'Laboratorista no encontrado' });
+
+      usuarioFinal = {
+        id: lab.id, // ✅ Esto ya es un número de la BD
+        tipoUsuario: lab.rol,
+        nombres: lab.nombres,
+        apellidos: lab.apellidos,
+        usuario: lab.usuario
       };
     }
 
-    console.log('👤 USUARIO AUTENTICADO:', req.user);
+    // PACIENTE
+    if (decoded.tipoUsuario === 'paciente') {
+      const paciente = await Paciente.findByPk(decoded.id);
+      if (paciente) {
+        usuarioFinal = {
+          id: paciente.id, // ✅ Esto ya es un número de la BD
+          tipoUsuario: 'paciente',
+          nombres: paciente.nombres,
+          apellidos: paciente.apellidos,
+          usuario: paciente.cedula
+        };
+      }
+    }
+
+    // ✅ VALIDACIÓN FINAL: Asegurar que el ID sea numérico
+    if (isNaN(parseInt(usuarioFinal.id))) {
+      console.error('❌ ID de usuario no es numérico:', usuarioFinal.id);
+      return res.status(401).json({ mensaje: 'ID de usuario inválido' });
+    }
+
+    req.usuario = usuarioFinal;
     next();
 
   } catch (error) {
-    console.error('❌ Error en autenticación JWT:', error.message);
-    
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ mensaje: 'Token expirado' });
-    }
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ mensaje: 'Token inválido' });
-    }
-    
-    res.status(401).json({ mensaje: 'Error de autenticación' });
+    console.error("❌ Error en verificarAuth:", error);
+    res.status(401).json({ mensaje: 'Token inválido o expirado' });
   }
 };
-
 
 module.exports = verificarAuth;

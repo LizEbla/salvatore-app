@@ -1,4 +1,4 @@
-// models/examenPacienteDetalle.model.js - COMPLETO CORREGIDO
+// models/examenPacienteDetalle.model.js - VERSIÓN COMPLETA CORREGIDA
 module.exports = (sequelize, DataTypes) => {
   const ExamenPacienteDetalle = sequelize.define('ExamenPacienteDetalle', {
     id: {
@@ -30,6 +30,15 @@ module.exports = (sequelize, DataTypes) => {
         key: 'id'
       }
     },
+    
+    // ✅ COLUMNA FALTANTE - AGREGAR ESTA
+    
+    nombreExamen: {
+  type: DataTypes.TEXT, // Cambiar de STRING a TEXT
+  allowNull: false,
+  defaultValue: 'Examen sin nombre'
+},
+    
     precioAplicado: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
@@ -37,7 +46,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     descuentoAplicado: {
       type: DataTypes.DECIMAL(10, 2),
-      allowNull: false, // ✅ CAMBIAR a false para que no sea NULL
+      allowNull: false,
       defaultValue: 0
     },
     precioFinal: {
@@ -52,6 +61,10 @@ module.exports = (sequelize, DataTypes) => {
       validate: {
         isIn: [['pendiente', 'completado', 'en_proceso', 'cancelado']]
       }
+    },
+    medicoSolicitanteDetalle: {
+      type: DataTypes.STRING,
+      allowNull: true
     },
     observaciones: {
       type: DataTypes.TEXT,
@@ -101,6 +114,82 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.JSON,
       allowNull: true
     },
+
+    // ✅ CAMPOS PARA PDF Y FIRMA
+    pdfGenerado: {
+      type: DataTypes.BLOB('long'),
+      allowNull: true
+    },
+    fechaGeneracionPdf: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    pdfPendiente: { // ✅ NUEVO - para controlar generación de PDF
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    firmaElectronica: {
+      type: DataTypes.JSON,
+      allowNull: true
+    },
+    fechaFirma: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    laboratoristaFirmaId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: {
+        model: 'Laboratoristas',
+        key: 'id'
+      }
+    },
+    firmaVisual: {
+      type: DataTypes.JSON,
+      allowNull: true
+    },
+    estadoFirma: { // ✅ NUEVO - para controlar estado de firma
+      type: DataTypes.STRING(20),
+      defaultValue: 'no_firmado',
+      validate: {
+        isIn: [['no_firmado', 'firmado', 'pendiente_firma']]
+      }
+    },
+
+    pdfFirmado: {
+  type: DataTypes.STRING,
+  allowNull: true
+},
+
+    
+    // ✅ CAMPOS DE REGISTRO - AGREGAR ESTOS
+    registradoPor: {
+      type: DataTypes.STRING(255),
+      allowNull: true
+    },
+    fechaRegistro: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    horaRegistro: {
+      type: DataTypes.STRING(20),
+      allowNull: true
+    },
+    laboratorio: {
+      type: DataTypes.STRING(255),
+      allowNull: true
+    },
+    
+    // ✅ CAMPOS PARA CONTROL DE EDICIÓN
+    esSubexamen: { // ✅ NUEVO - para identificar tipo
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    fechaCompletado: { // ✅ NUEVO - para controlar cuando se completa
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+
     createdAt: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -120,7 +209,8 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['subexamenId'] },
       { fields: ['estado'] },
       { fields: ['laboratoristaId'] },
-      { fields: ['sucursalId'] }
+      { fields: ['sucursalId'] },
+      { fields: ['nombreExamen'] } // ✅ NUEVO índice
     ]
   });
 
@@ -149,6 +239,11 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'sucursalId', 
       as: 'Sucursal' 
     });
+
+    ExamenPacienteDetalle.hasMany(models.HistorialResultados, {
+      foreignKey: 'examenPacienteDetalleId',
+      as: 'Historial'
+    });
     
     ExamenPacienteDetalle.belongsTo(models.Promocion, { 
       foreignKey: 'promocionId', 
@@ -156,12 +251,42 @@ module.exports = (sequelize, DataTypes) => {
     });
   };
 
-  // Hook para calcular precioFinal automáticamente
-  ExamenPacienteDetalle.beforeSave((detalle, options) => {
+  // ✅ HOOK MEJORADO para calcular precioFinal y establecer nombreExamen
+  ExamenPacienteDetalle.beforeSave(async (detalle, options) => {
+    // Calcular precioFinal
     if (detalle.precioAplicado || detalle.descuentoAplicado) {
       const precio = parseFloat(detalle.precioAplicado || 0);
       const descuento = parseFloat(detalle.descuentoAplicado || 0);
-      detalle.precioFinal = precio - descuento;
+      detalle.precioFinal = Math.max(0, precio - descuento);
+    }
+
+    // ✅ ESTABLECER nombreExamen automáticamente si no está definido
+    if (!detalle.nombreExamen) {
+      try {
+        if (detalle.examenId && detalle.esSubexamen === false) {
+          const examen = await sequelize.models.Examen.findByPk(detalle.examenId);
+          if (examen) {
+            detalle.nombreExamen = examen.nombre;
+          }
+        } else if (detalle.subexamenId && detalle.esSubexamen === true) {
+          const subexamen = await sequelize.models.Subexamen.findByPk(detalle.subexamenId);
+          if (subexamen) {
+            detalle.nombreExamen = subexamen.nombre;
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ No se pudo establecer nombreExamen automáticamente:', error.message);
+      }
+    }
+
+    // ✅ ESTABLECER esSubexamen automáticamente
+    if (detalle.esSubexamen === undefined || detalle.esSubexamen === null) {
+      detalle.esSubexamen = !!detalle.subexamenId;
+    }
+
+    // ✅ ACTUALIZAR estado cuando se completa
+    if (detalle.estado === 'completado' && !detalle.fechaCompletado) {
+      detalle.fechaCompletado = new Date();
     }
   });
 

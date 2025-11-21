@@ -1,143 +1,175 @@
-// auth.controller.js - VERSIÓN CON JWT REAL
-const { Laboratorista } = require('../models');
-const { Op } = require('sequelize');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken'); // 👈 IMPORTAR JWT
+// controllers/auth.controller.js
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
-// Usuarios simulados como fallback (pero con JWT real)
-const usuariosSimulados = [
-  { 
-    username: 'admin', 
-    password: 'admin123', 
-    rol: 'administrador',
-    id: 9991,
-    nombres: 'Administrador',
-    apellidos: 'Sistema'
+
+// ✅ IMPORTACIÓN CORRECTA DESDE index.js
+const db = require('../models');
+const Laboratorista = db.Laboratorista;
+const Paciente = db.Paciente;
+
+const JWT_SECRET = process.env.JWT_SECRET || 'salvatore_secret_key';
+
+// ============================================================
+// 🔵 USUARIOS FIJOS (ADMIN, LAB, PACIENTE)
+// ============================================================
+const usuariosFijos = [
+  {
+    usuario: "admin",
+    contrasena: "admin123",
+    rol: "administrador",
+    nombres: "Usuario",
+    apellidos: "Administrador"
   },
-  { 
-    username: 'lab', 
-    password: 'lab123', 
-    rol: 'laboratorista',
-    id: 9992,
-    nombres: 'Laboratorista',
-    apellidos: 'Principal'
+  {
+    usuario: "lab",
+    contrasena: "lab123",
+    rol: "laboratorista",
+    nombres: "Usuario",
+    apellidos: "Laboratorista"
   },
-  { 
-    username: 'root', 
-    password: 'root123', 
-    rol: 'programador',
-    id: 9993,
-    nombres: 'Super',
-    apellidos: 'Usuario'
+  {
+    usuario: "paciente",
+    contrasena: "paciente123",
+    rol: "paciente",
+    nombres: "Usuario",
+    apellidos: "Paciente"
   }
 ];
 
+
+// ============================================================
+// 🔵 LOGIN LABORATORISTA / ADMINISTRADOR / SUPERADMIN
+// ============================================================
 exports.login = async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    console.log("=== 🔍 LOGIN INICIADO ===");
-    console.log("📥 Datos recibidos:", { username, password });
-
-    let usuarioEncontrado = null;
-    let esUsuarioReal = false;
-
-    // 1️⃣ PRIMERO: Buscar en Laboratorista (Base de Datos REAL)
-    const usuarioBD = await Laboratorista.findOne({
-      where: { usuario: { [Op.iLike]: username.trim() } }
-    });
-
-    if (usuarioBD) {
-      console.log("✅ Usuario encontrado en BD:", usuarioBD.usuario);
-      
-      // Verificar contraseña
-      const esValido = await bcrypt.compare(password, usuarioBD.contrasena);
-      console.log("🔐 Resultado bcrypt.compare:", esValido);
-
-      if (esValido) {
-        usuarioEncontrado = usuarioBD;
-        esUsuarioReal = true;
-        console.log("✅ Login exitoso - Usuario BD");
-      } else {
-        console.log("❌ Contraseña incorrecta");
-        return res.status(401).json({ message: 'Credenciales incorrectas' });
-      }
-    } else {
-      // 2️⃣ SEGUNDO: Buscar en usuarios simulados
-      const usuarioSimulado = usuariosSimulados.find(
-        u => u.username.toLowerCase() === username.toLowerCase() && u.password === password
-      );
-
-      if (usuarioSimulado) {
-        usuarioEncontrado = usuarioSimulado;
-        esUsuarioReal = false;
-        console.log("✅ Usuario simulado:", usuarioSimulado.username);
-      } else {
-        console.log("❌ Usuario no encontrado");
-        return res.status(401).json({ message: 'Credenciales incorrectas' });
-      }
+    if (!username || !password) {
+      return res.status(400).json({ mensaje: 'Usuario y contraseña son obligatorios' });
     }
 
-    // 🎫 CREAR JWT REAL (PARA AMBOS CASOS)
-    const tokenPayload = {
-      id: usuarioEncontrado.id,
-      usuario: usuarioEncontrado.usuario,
-      nombres: usuarioEncontrado.nombres,
-      apellidos: usuarioEncontrado.apellidos,
-      rol: usuarioEncontrado.rol,
-      esUsuarioReal: esUsuarioReal, // Para saber si es de BD o simulado
-      tipo: esUsuarioReal ? 'laboratorista_bd' : 'usuario_simulado'
-    };
 
-    // 🔐 GENERAR TOKEN JWT REAL
+    const usuarioFijo = usuariosFijos.find(u => u.usuario === username);
+
+    if (usuarioFijo) {
+      if (password !== usuarioFijo.contrasena) {
+        return res.status(401).json({ mensaje: 'Credenciales incorrectas' });
+      }
+
+      const token = jwt.sign(
+        {
+          id: usuarioFijo.usuario, // usa el username como ID
+          tipoUsuario: usuarioFijo.rol
+        },
+        JWT_SECRET,
+        { expiresIn: '10h' }
+      );
+
+      return res.json({
+        ok: true,
+        token,
+        usuario: {
+          id: usuarioFijo.usuario,
+          nombres: usuarioFijo.nombres,
+          apellidos: usuarioFijo.apellidos,
+          tipoUsuario: usuarioFijo.rol
+        }
+      });
+    }
+
+
+    // 🔍 Buscar usuario por campo username
+    const usuario = await Laboratorista.findOne({ where: { usuario: username } });
+
+    if (!usuario) {
+      return res.status(401).json({ mensaje: 'Credenciales incorrectas' });
+    }
+
+    const passwordValida = await bcrypt.compare(password, usuario.contrasena);
+
+    if (!passwordValida) {
+      return res.status(401).json({ mensaje: 'Credenciales incorrectas' });
+    }
+
     const token = jwt.sign(
-      tokenPayload, 
-      process.env.JWT_SECRET || 'clave-secreta-para-desarrollo', // Clave secreta
-      { expiresIn: '24h' } // ⏰ Token expira en 24 horas
+      {
+        id: usuario.id,
+        tipoUsuario: usuario.rol
+      },
+      JWT_SECRET,
+      { expiresIn: '8h' }
     );
 
-    console.log("🎫 JWT GENERADO:", {
-      id: usuarioEncontrado.id,
-      usuario: usuarioEncontrado.usuario,
-      expiraEn: '24 horas'
-    });
-
-    res.json({
-      token: token, // 👈 ESTE ES EL JWT REAL
-      rol: usuarioEncontrado.rol,
+    return res.json({
+      ok: true,
+      token,
       usuario: {
-        id: usuarioEncontrado.id,
-        nombres: usuarioEncontrado.nombres,
-        apellidos: usuarioEncontrado.apellidos,
-        usuario: usuarioEncontrado.usuario,
-        tipo: esUsuarioReal ? 'BD Real' : 'Simulado'
-      },
-      message: 'Login exitoso'
+        id: usuario.id,
+        nombres: usuario.nombres,
+        apellidos: usuario.apellidos,
+        tipoUsuario: usuario.rol
+      }
     });
 
   } catch (error) {
-    console.error("💥 Error en login:", error);
-    res.status(500).json({ message: 'Error del servidor: ' + error.message });
+    console.error('❌ ERROR LOGIN:', error);
+    return res.status(500).json({ mensaje: 'Error interno del servidor' });
   }
 };
 
 
-// En auth.controller.js - agregar esta función
-exports.verificarToken = async (req, res) => {
+// ============================================================
+// 🟢 LOGIN PACIENTES
+// ============================================================
+exports.loginPaciente = async (req, res) => {
   try {
-    console.log('🔐 Verificando token JWT...');
-    
-    res.json({
-      valido: true,
-      usuario: req.user,
-      message: 'Token JWT válido',
-      timestamp: new Date().toISOString()
+    const { cedula, password } = req.body;
+
+    if (!cedula || !password) {
+      return res.status(400).json({ mensaje: 'Cédula y contraseña son obligatorias' });
+    }
+
+    const paciente = await Paciente.findOne({ where: { cedula } });
+
+    if (!paciente) {
+      return res.status(404).json({ mensaje: 'Paciente no encontrado' });
+    }
+
+    const passEsperada =
+      paciente.fechaNacimiento?.split('-')?.reverse()?.join('');
+
+    if (passEsperada !== password) {
+      return res.status(401).json({ mensaje: 'Contraseña incorrecta' });
+    }
+
+    const token = jwt.sign(
+      {
+        id: paciente.id,
+        tipoUsuario: 'paciente'
+      },
+      JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    return res.json({
+      ok: true,
+      token,
+      paciente
     });
+
   } catch (error) {
-    res.status(401).json({ 
-      valido: false, 
-      message: 'Token inválido' 
-    });
+    console.error('❌ ERROR LOGIN PACIENTE:', error);
+    return res.status(500).json({ mensaje: 'Error interno del servidor' });
   }
 };
 
+
+
+
+exports.verificarToken = (req, res) => {
+  return res.json({
+    ok: true,
+    usuario: req.usuario
+  });
+};

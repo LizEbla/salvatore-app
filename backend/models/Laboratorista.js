@@ -83,6 +83,12 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'sucursalId',
       as: 'Sucursal'
     });
+
+ Laboratorista.hasMany(models.HistorialResultados, {
+    foreignKey: 'laboratoristaId',
+    as: 'HistorialResultados'
+  });
+
   };
 
   return Laboratorista;

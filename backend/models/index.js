@@ -1,6 +1,11 @@
+// models/index.js
+
 const Sequelize = require('sequelize');
 const dbConfig = require('../config/db.config');
 
+// ============================
+// 📌 CONEXIÓN CON BASE DE DATOS
+// ============================
 const sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
   host: dbConfig.HOST,
   port: dbConfig.PORT,
@@ -13,9 +18,9 @@ const db = {};
 db.Sequelize = Sequelize;
 db.sequelize = sequelize;
 
-// ==========================
+// ============================
 // 📌 IMPORTACIÓN DE MODELOS
-// ==========================
+// ============================
 db.Laboratorista = require('./Laboratorista.js')(sequelize, Sequelize.DataTypes);
 db.Paciente = require('./paciente.model.js')(sequelize, Sequelize.DataTypes);
 db.Area = require('./area.model.js')(sequelize, Sequelize.DataTypes);
@@ -29,11 +34,33 @@ db.ExamenPaciente = require('./examenPaciente.model.js')(sequelize, Sequelize.Da
 db.ExamenPacienteDetalle = require('./examenPacienteDetalles.js')(sequelize, Sequelize.DataTypes);
 db.Sucursal = require('./sucursal.model.js')(sequelize, Sequelize.DataTypes);
 
-// ==========================
-// 📌 EJECUTAR ASOCIACIONES UNA SOLA VEZ
-// ==========================
+// ============================
+// 📌 IMPORTAR MODELO PAGO
+// ============================
+try {
+  db.Pago = require('./pago.js')(sequelize, Sequelize.DataTypes);
+  console.log('💰 Modelo Pago cargado correctamente');
+} catch (error) {
+  console.warn('⚠️ Modelo Pago no encontrado. Crear el archivo models/pago.js');
+  db.Pago = null;
+}
+
+// ============================
+// 📌 IMPORTAR HISTORIAL DE RESULTADOS
+// ============================
+try {
+  db.HistorialResultados = require('./historialresultados.js')(sequelize, Sequelize.DataTypes);
+  console.log('📘 Modelo HistorialResultados cargado correctamente');
+} catch (error) {
+  console.warn('⚠️ Modelo HistorialResultados no encontrado.');
+  db.HistorialResultados = null;
+}
+
+// ============================
+// 📌 EJECUTAR TODAS LAS ASOCIACIONES
+// ============================
 Object.keys(db).forEach(modelName => {
-  if (db[modelName].associate) {
+  if (db[modelName] && db[modelName].associate) {
     db[modelName].associate(db);
   }
 });

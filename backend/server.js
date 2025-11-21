@@ -1,4 +1,4 @@
-// server.js
+// server.js - VERSIÓN CORREGIDA
 const express = require('express');
 const cors = require('cors');
 const db = require('./models');
@@ -6,35 +6,8 @@ const path = require('path');
 
 const app = express();
 
-// Agregar esto después de const app = express();
-app.use((req, res, next) => {
-  if (req.originalUrl.includes('asignar-examenes')) {
-    console.log('🔍 SOLICITUD DETECTADA PARA ASIGNAR-EXAMENES:');
-    console.log('   URL:', req.originalUrl);
-    console.log('   Método:', req.method);
-    console.log('   Headers:', req.headers);
-  }
-  next();
-});
-
 // ========================
-// 1. IMPORTAR TODAS LAS RUTAS
-// ========================
-const tipoExamenRoutes = require('./routes/tipoexamen.routes');
-const pacienteRoutes = require('./routes/paciente.routes');
-const authRoutes = require('./routes/auth.routes');
-const laboratoristaRoutes = require('./routes/laboratoristas.routes');
-const sucursalRoutes = require('./routes/sucursal.routes');
-const promocionRoutes = require('./routes/promocion.routes');
-
-// RUTAS MODULARES
-const examenRoutes = require('./routes/examen.routes');
-const pagoRoutes = require('./routes/pago.routes');
-const resultadoRoutes = require('./routes/resultado.routes');
-const diagnosticoRoutes = require('./routes/diagnostico.routes');
-
-// ========================
-// 2. MIDDLEWARES
+// 1. MIDDLEWARES BÁSICOS
 // ========================
 app.use(cors({
   origin: ['http://localhost:4200', 'http://127.0.0.1:4200'],
@@ -48,16 +21,39 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ========================
-// 3. MIDDLEWARE DE LOGS MEJORADO
-// ========================
+// Middleware de logs mejorado
 app.use((req, res, next) => {
   console.log(`📨 ${req.method} ${req.originalUrl} - ${new Date().toISOString()}`);
   next();
 });
 
+// Middleware específico para asignar-examenes
+app.use((req, res, next) => {
+  if (req.originalUrl.includes('asignar-examenes')) {
+    console.log('🔍 SOLICITUD DETECTADA PARA ASIGNAR-EXAMENES:');
+    console.log('   URL:', req.originalUrl);
+    console.log('   Método:', req.method);
+  }
+  next();
+});
+
 // ========================
-// 4. USAR TODAS LAS RUTAS (CORREGIDO - SIN DUPLICADOS)
+// 2. IMPORTAR RUTAS
+// ========================
+const tipoExamenRoutes = require('./routes/tipoexamen.routes');
+const pacienteRoutes = require('./routes/paciente.routes');
+const authRoutes = require('./routes/auth.routes');
+const laboratoristaRoutes = require('./routes/laboratoristas.routes');
+const sucursalRoutes = require('./routes/sucursal.routes');
+const promocionRoutes = require('./routes/promocion.routes');
+const examenRoutes = require('./routes/examen.routes');
+const pagoRoutes = require('./routes/pago.routes');
+const resultadoRoutes = require('./routes/resultado.routes');
+const diagnosticoRoutes = require('./routes/diagnostico.routes');
+const vistaPacienteRoutes = require('./routes/vista-paciente.routes');
+
+// ========================
+// 3. CONFIGURAR RUTAS (SIN DUPLICADOS)
 // ========================
 app.use('/api/tipoexamenes', tipoExamenRoutes);
 app.use('/api/auth', authRoutes);
@@ -65,15 +61,176 @@ app.use('/api/pacientes', pacienteRoutes);
 app.use('/api/laboratoristas', laboratoristaRoutes);
 app.use('/api/sucursales', sucursalRoutes);
 app.use('/api/promociones', promocionRoutes);
-
-// ✅ CORREGIDO: Solo una instancia de rutas de exámenes
 app.use('/api/examenes', examenRoutes);
 app.use('/api/pagos', pagoRoutes);
 app.use('/api/resultados', resultadoRoutes);
 app.use('/api/diagnosticos', diagnosticoRoutes);
+app.use('/api/vista-paciente', vistaPacienteRoutes);
 
+console.log("✅ TODAS LAS RUTAS CARGADAS SIN DUPLICADOS:");
 
-// 🆕 AGREGAR ENDPOINT DE DIAGNÓSTICO PARA RUTAS
+// ========================
+// 4. ENDPOINTS ESPECIALES
+// ========================
+
+// ✅ Endpoint para guardar PDF
+app.post('/api/examenes/guardar-pdf-resultado', async (req, res) => {
+  try {
+    console.log('💾 SOLICITUD GUARDAR PDF RECIBIDA:', {
+      detalleId: req.body.detalleId,
+      paciente: req.body.paciente?.nombres,
+      examen: req.body.examen?.nombre,
+      tamañoPdf: req.body.pdfBuffer?.length
+    });
+
+    const { detalleId, pdfBuffer, paciente, examen, resultados, fechaGeneracion, metadata } = req.body;
+
+    if (!detalleId || !pdfBuffer) {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'Datos incompletos para guardar PDF'
+      });
+    }
+
+    // ✅ CONVERTIR BUFFER A BINARIO
+    const pdfData = Buffer.from(pdfBuffer);
+
+    // ✅ GUARDAR EN BASE DE DATOS
+    const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId);
+    if (!detalle) {
+      return res.status(404).json({
+        success: false,
+        mensaje: 'No se encontró el detalle del examen'
+      });
+    }
+
+    // Actualizar con los campos de PDF
+    await detalle.update({
+      resultado_pdf: pdfData,
+      fecha_generacion_pdf: new Date(),
+      pdf_metadata: metadata || {}
+    });
+
+    console.log('✅ PDF GUARDADO EN BASE DE DATOS para detalleId:', detalleId);
+
+    res.json({
+      success: true,
+      mensaje: 'PDF guardado exitosamente en el sistema',
+      detalleId: detalleId,
+      tamañoPdf: pdfData.length,
+      fechaGuardado: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ ERROR GUARDANDO PDF EN BACKEND:', error);
+    res.status(500).json({
+      success: false,
+      mensaje: 'Error interno guardando PDF: ' + error.message
+    });
+  }
+});
+
+// ✅ Endpoint para cambiar estado
+app.put('/api/examenes/:id/estado', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+
+    console.log('🔄 SOLICITUD CAMBIO DE ESTADO:', { id, estado });
+
+    if (!estado) {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'Estado no proporcionado'
+      });
+    }
+
+    // Buscar el detalle del examen
+    const detalle = await db.ExamenPacienteDetalle.findByPk(id);
+    if (!detalle) {
+      return res.status(404).json({
+        success: false,
+        mensaje: 'No se encontró el examen'
+      });
+    }
+
+    // Actualizar estado
+    await detalle.update({ estado });
+
+    console.log('✅ ESTADO ACTUALIZADO:', { id, estadoAnterior: detalle.estado, estadoNuevo: estado });
+
+    res.json({
+      success: true,
+      mensaje: 'Estado actualizado correctamente',
+      data: {
+        id: detalle.id,
+        estado: detalle.estado
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ ERROR CAMBIANDO ESTADO:', error);
+    res.status(500).json({
+      success: false,
+      mensaje: 'Error interno cambiando estado: ' + error.message
+    });
+  }
+});
+
+// ✅ Endpoint de información de registro
+app.get('/api/examenes/detalle-examen/:detalleId/informacion-registro', async (req, res) => {
+  try {
+    const { detalleId } = req.params;
+
+    console.log('🔍 SOLICITUD INFORMACIÓN REGISTRO:', detalleId);
+
+    // Buscar información básica del detalle
+    const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId, {
+      include: [
+        {
+          model: db.Laboratorio || db.Sucursal,
+          as: 'Laboratorio',
+          attributes: ['id', 'nombre']
+        }
+      ]
+    });
+
+    if (!detalle) {
+      return res.status(404).json({
+        success: false,
+        mensaje: 'No se encontró información de registro para este examen'
+      });
+    }
+
+    // Información por defecto
+    const informacionRegistro = {
+      registradoPor: 'Sistema',
+      fechaRegistro: detalle.createdAt ? 
+        new Date(detalle.createdAt).toLocaleDateString('es-ES') :
+        new Date().toLocaleDateString('es-ES'),
+      horaRegistro: detalle.createdAt ?
+        new Date(detalle.createdAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) :
+        new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+      laboratorio: detalle.Laboratorio ? detalle.Laboratorio.nombre : 'Laboratorio Central',
+      laboratoristaId: null
+    };
+
+    res.json({
+      success: true,
+      data: informacionRegistro
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo información de registro:', error);
+    res.status(500).json({
+      success: false,
+      mensaje: 'Error interno del servidor',
+      detalle: error.message
+    });
+  }
+});
+
+// 🆕 Endpoint de diagnóstico para rutas
 app.get('/api/debug/routes', (req, res) => {
   const routes = [];
   
@@ -116,23 +273,7 @@ app.get('/api/debug/routes', (req, res) => {
   });
 });
 
-console.log("✅ TODAS LAS RUTAS CARGADAS:");
-console.log("   📋 /api/tipoexamenes");
-console.log("   🔐 /api/auth");
-console.log("   👤 /api/pacientes");
-console.log("   👨‍🔬 /api/laboratoristas");
-console.log("   🏢 /api/sucursales");
-console.log("   🎯 /api/promociones");
-console.log("   🧪 /api/examenes (Gestión completa de exámenes)");
-console.log("   💰 /api/pagos (Gestión de pagos)");
-console.log("   📄 /api/resultados (Resultados y PDFs)");
-console.log("   🩺 /api/diagnosticos (Diagnósticos y reparaciones)");
-
-// ========================
-// 5. ENDPOINTS ESPECIALES
-// ========================
-
-// Endpoint de salud MEJORADO
+// ✅ Endpoint de salud MEJORADO
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
@@ -153,13 +294,13 @@ app.get('/api/health', (req, res) => {
     },
     endpoints: {
       asignarExamenes: 'POST /api/examenes/pacientes/:id/asignar-examenes',
-      resumenExamenes: 'GET /api/examenes/pacientes/:id/resumen-examenes',
-      examenesConArea: 'GET /api/examenes/examenes-con-area'
+      resumenExamenes: 'GET /api/examenes/pacientes/:id/examenes-agrupados',
+      pagoGrupal: 'POST /api/pagos/procesar-pago-grupal'
     }
   });
 });
 
-// Endpoint para verificar conexión a base de datos
+// ✅ Endpoint para verificar conexión a base de datos
 app.get('/api/db-status', async (req, res) => {
   try {
     await db.sequelize.authenticate();
@@ -181,7 +322,7 @@ app.get('/api/db-status', async (req, res) => {
   }
 });
 
-// Endpoint de información del sistema
+// ✅ Endpoint de información del sistema
 app.get('/api/system-info', (req, res) => {
   res.json({
     sistema: 'Laboratorio Clínico Especializado',
@@ -204,112 +345,13 @@ app.get('/api/system-info', (req, res) => {
 });
 
 // ========================
-// 6. ENDPOINT DE INFORMACIÓN DE REGISTRO
-// ========================
-app.get('/api/examenes/detalle/:detalleId/informacion-registro', async (req, res) => {
-  try {
-    const { detalleId } = req.params;
-
-    if (db.ExamenPacienteDetalle) {
-      const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId, {
-        include: [
-          {
-            model: db.Laboratorio || db.Sucursal,
-            as: 'Laboratorio',
-            attributes: ['id', 'nombre']
-          },
-          {
-            model: db.Usuario || db.Laboratorista,
-            as: 'UsuarioRegistro',
-            attributes: ['id', 'nombre', 'apellido']
-          }
-        ]
-      });
-
-      if (!detalle) {
-        return res.status(404).json({
-          success: false,
-          mensaje: 'No se encontró información de registro para este examen'
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          registradoPor: detalle.UsuarioRegistro ? 
-            `${detalle.UsuarioRegistro.nombre} ${detalle.UsuarioRegistro.apellido}` : 'Sistema',
-          fechaRegistro: detalle.fecha_registro ? 
-            new Date(detalle.fecha_registro).toLocaleDateString('es-ES') :
-            new Date().toLocaleDateString('es-ES'),
-          horaRegistro: detalle.hora_registro ||
-            new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-          laboratorio: detalle.Laboratorio ? detalle.Laboratorio.nombre : 'Laboratorio Central',
-          laboratoristaId: detalle.usuario_registro_id
-        }
-      });
-    } else {
-      // Fallback a query directo
-      const query = `
-        SELECT 
-          epd.fecha_registro as "fechaRegistro",
-          epd.hora_registro as "horaRegistro",
-          l.nombre as laboratorio,
-          u.nombre || ' ' || u.apellido as "registradoPor",
-          u.id as "laboratoristaId"
-        FROM examen_paciente_detalle epd
-        LEFT JOIN laboratorios l ON epd.laboratorio_id = l.id
-        LEFT JOIN usuarios u ON epd.usuario_registro_id = u.id
-        WHERE epd.id = $1
-      `;
-
-      const result = await db.sequelize.query(query, {
-        replacements: [detalleId],
-        type: db.sequelize.QueryTypes.SELECT
-      });
-
-      if (result.length === 0) {
-        return res.status(404).json({
-          success: false,
-          mensaje: 'No se encontró información de registro para este examen'
-        });
-      }
-
-      const registro = result[0];
-
-      res.json({
-        success: true,
-        data: {
-          registradoPor: registro.registradoPor || 'Sistema',
-          fechaRegistro: registro.fechaRegistro ?
-            new Date(registro.fechaRegistro).toLocaleDateString('es-ES') :
-            new Date().toLocaleDateString('es-ES'),
-          horaRegistro: registro.horaRegistro ||
-            new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-          laboratorio: registro.laboratorio || 'Laboratorio Central',
-          laboratoristaId: registro.laboratoristaId
-        }
-      });
-    }
-
-  } catch (error) {
-    console.error('❌ Error obteniendo información de registro:', error);
-    res.status(500).json({
-      success: false,
-      mensaje: 'Error interno del servidor',
-      detalle: error.message
-    });
-  }
-});
-
-// ========================
-// 7. MANEJO DE ERRORES
+// 5. MANEJO DE ERRORES
 // ========================
 
 // Middleware para rutas no encontradas MEJORADO
 app.use('*', (req, res) => {
   console.warn(`❌ Ruta no encontrada: ${req.method} ${req.originalUrl}`);
   
-  // Si es una ruta de API, dar sugerencias específicas
   if (req.originalUrl.startsWith('/api/')) {
     return res.status(404).json({ 
       success: false,
@@ -329,7 +371,6 @@ app.use('*', (req, res) => {
     });
   }
   
-  // Para rutas no-API
   res.status(404).json({ 
     success: false,
     error: 'Ruta no encontrada',
@@ -341,7 +382,6 @@ app.use('*', (req, res) => {
 app.use((error, req, res, next) => {
   console.error('💥 Error del servidor:', error);
   
-  // Si el error es de validación de Sequelize
   if (error.name === 'SequelizeValidationError') {
     const errores = error.errors.map(err => ({
       campo: err.path,
@@ -356,7 +396,6 @@ app.use((error, req, res, next) => {
     });
   }
   
-  // Si el error es de duplicado en Sequelize
   if (error.name === 'SequelizeUniqueConstraintError') {
     return res.status(400).json({
       success: false,
@@ -365,7 +404,6 @@ app.use((error, req, res, next) => {
     });
   }
   
-  // Si el error es de conexión a la base de datos
   if (error.name === 'SequelizeConnectionError') {
     return res.status(503).json({
       success: false,
@@ -374,7 +412,6 @@ app.use((error, req, res, next) => {
     });
   }
   
-  // Error genérico del servidor
   res.status(500).json({
     success: false,
     error: 'Error interno del servidor',
@@ -383,7 +420,7 @@ app.use((error, req, res, next) => {
 });
 
 // ========================
-// 8. INICIAR SERVIDOR MEJORADO
+// 6. INICIAR SERVIDOR MEJORADO
 // ========================
 const PORT = process.env.PORT || 3000;
 
@@ -394,7 +431,7 @@ const startServer = async () => {
     console.log('✅ Base de datos sincronizada');
     
     // Iniciar servidor
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log('=================================');
       console.log('🚀 SISTEMA DE LABORATORIO CLÍNICO');
       console.log('=================================');
@@ -420,6 +457,18 @@ const startServer = async () => {
       console.log('   POST /api/examenes/pacientes/:id/asignar-examenes');
       console.log('=================================');
     });
+
+    // Manejo de errores del servidor
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`❌ Puerto ${PORT} ya está en uso`);
+        process.exit(1);
+      } else {
+        console.error('❌ Error del servidor:', error);
+      }
+    });
+
+    return server;
     
   } catch (error) {
     console.error('❌ Error iniciando el servidor:', error);
@@ -428,33 +477,89 @@ const startServer = async () => {
 };
 
 // ========================
-// 9. MANEJO GRACEFUL DE CIERRE
+// 7. MANEJO GRACEFUL DE CIERRE (CORREGIDO)
 // ========================
-process.on('SIGINT', async () => {
-  console.log('\n🛑 Cerrando servidor gracefulmente...');
+
+// Variable para controlar el estado del servidor
+let isShuttingDown = false;
+
+const gracefulShutdown = async (signal) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log(`\n🛑 Recibido ${signal}. Cerrando servidor gracefulmente...`);
+  
   try {
+    // Cerrar conexión a la base de datos
     await db.sequelize.close();
     console.log('✅ Conexión a la base de datos cerrada');
+    
+    console.log('✅ Servidor cerrado exitosamente');
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error cerrando conexión a BD:', error);
+    console.error('❌ Error durante el cierre graceful:', error);
     process.exit(1);
   }
+};
+
+// Solo manejar señales de cierre, NO usar process.exit() en otros lugares
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Manejo de errores no capturados (PERO NO usar process.exit())
+process.on('uncaughtException', (error) => {
+  console.error('💥 ERROR NO CAPTURADO:', error);
+  // NO usar process.exit() aquí - dejar que el servidor continúe
 });
 
-process.on('SIGTERM', async () => {
-  console.log('🛑 Servidor recibió SIGTERM, cerrando...');
-  try {
-    await db.sequelize.close();
-    console.log('✅ Conexión a la base de datos cerrada');
-    process.exit(0);
-  } catch (error) {
-    console.error('❌ Error cerrando conexión a BD:', error);
-    process.exit(1);
-  }
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 PROMESA RECHAZADA NO MANEJADA:', reason);
+  // NO usar process.exit() aquí - dejar que el servidor continúe
 });
 
-// Iniciar servidor
-startServer();
+// ========================
+// 8. INICIAR LA APLICACIÓN
+// ========================
+startServer().then(server => {
+  console.log('✅ Servidor iniciado correctamente');
+}).catch(error => {
+  console.error('❌ Error fatal iniciando servidor:', error);
+  process.exit(1);
+});
+
+
+// Agrega esta ruta temporal de diagnóstico en tu server.js o routes.js
+app.get('/api/debug/endpoints', (req, res) => {
+  const routes = [];
+  
+  app._router.stack.forEach((middleware) => {
+    if (middleware.route) {
+      // Rutas directas
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router') {
+      // Rutas de router
+      middleware.handle.stack.forEach((handler) => {
+        if (handler.route) {
+          routes.push({
+            path: handler.route.path,
+            methods: Object.keys(handler.route.methods)
+          });
+        }
+      });
+    }
+  });
+  
+  res.json({
+    totalRoutes: routes.length,
+    routes: routes.filter(route => 
+      route.path.includes('examen') || 
+      route.path.includes('asignar') ||
+      route.path.includes('paciente')
+    )
+  });
+});
 
 module.exports = app;

@@ -28,13 +28,13 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: DataTypes.NOW
     },
     estadoPago: {
-      type: DataTypes.STRING(50),
-      allowNull: false,
-      defaultValue: 'pendiente',
-      validate: {
-        isIn: [['pendiente', 'pagado', 'parcial', 'cancelado']]
-      }
-    },
+  type: DataTypes.STRING(50),
+  allowNull: false,
+  defaultValue: 'pendiente',
+  validate: {
+    isIn: [['pendiente', 'pagado', 'parcial', 'abono', 'cancelado']] // ✅ AGREGAR 'abono'
+  }
+},
     abono: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: true,
@@ -55,6 +55,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       defaultValue: 0
     },
+    medicoSolicitante: {
+  type: DataTypes.STRING,
+  allowNull: true
+},
+
     observaciones: {
       type: DataTypes.TEXT,
       allowNull: true
@@ -120,6 +125,11 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'sucursalId', 
       as: 'Sucursal' 
     });
+
+
+
+
+    
   };
 
   return ExamenPaciente;

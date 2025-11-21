@@ -1,11 +1,18 @@
-// routes/auth.js
+// routes/auth.routes.js
 const express = require('express');
 const router = express.Router();
-const authController = require('../controllers/auth.controller'); // 👈 IMPORTAR EL CONTROLADOR REAL
+
+const authController = require('../controllers/auth.controller');
 const verificarAuth = require('../middleware/auth');
 
+// LOGIN LAB + ADMIN + SUPERADMIN
 router.post('/login', authController.login);
-router.get('/verificar', verificarAuth, authController.verificarToken); // 👈 NUEVA RUTA
+
+// LOGIN PACIENTE
+router.post('/login-paciente', authController.loginPaciente);
+
+// VERIFICAR TOKEN
+router.get('/verificar', verificarAuth, authController.verificarToken);
 
 
 

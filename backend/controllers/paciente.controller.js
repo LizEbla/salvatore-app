@@ -1,5 +1,7 @@
 const db = require('../models');
 const { Op, Sequelize } = require('sequelize');
+const bcrypt = require('bcryptjs');
+
 
 const Paciente = db.Paciente;
 
@@ -439,101 +441,86 @@ function ajustarFechaParaZonaHoraria(fechaString, esInicioDelDia = true) {
   }
 }
 
-const crearPaciente = async (req, res) => {
-  // DEBUG COMPLETO DEL REQUEST
-  console.log('🔍 DEBUG COMPLETO DEL REQUEST:');
-  console.log('📋 Headers:', req.headers);
-  console.log('🔐 Auth Header:', req.headers.authorization);
-  console.log('👤 req.user:', req.user);
-  console.log('📦 req.body:', req.body);
+
+
+// En paciente.controller.js - AGREGAR ESTA FUNCIÓN
+const debugUserInfo = async (req, res) => {
+  console.log('🔍 DEBUG USER INFO:');
+  console.log('Headers:', req.headers);
+  console.log('User object:', req.usuario);
+  console.log('Auth header:', req.header('Authorization'));
   
+  res.json({
+    user: req.usuario,
+    headers: req.headers,
+    authHeader: req.header('Authorization'),
+    message: req.usuario ? 'Usuario autenticado' : 'No autenticado'
+  });
+};
+
+
+
+const crearPaciente = async (req, res) => {
+  console.log('📌 Registro de paciente iniciado');
+  console.log('📦 Datos recibidos:', req.body);
+
   const {
-    nombres, apellidos, cedula, fechaNacimiento, edad,
-    estadoSalud, direccion, telefono, correo,
-    alergias, usuario, contrasena, sexo
-  } = req.body;
+  nombres, apellidos, cedula, fechaNacimiento, edad,
+  estadoSalud, direccion, telefono, correo,
+  alergias, usuario, claveAcceso, sexo
+} = req.body;
+
+const contrasena = claveAcceso; // ✅ usar misma clave para login y visible
+
 
   try {
+    // 1️⃣ Verificar duplicados
     const existe = await Paciente.findOne({
-      where: {
-        [Op.or]: [
-          { cedula },
-          {
-            [Op.and]: [
-              { nombres: { [Op.iLike]: nombres } },
-              { apellidos: { [Op.iLike]: apellidos } }
-            ]
-          }
-        ]
-      }
+      where: { [Op.or]: [{ cedula }, { usuario }] }
     });
 
     if (existe) {
       return res.status(409).json({ mensaje: 'El paciente ya está registrado.' });
     }
 
-    let laboratoristaId = null;
-    let nombreLaboratorista = null;
-    
-    // DEBUG DETALLADO DEL USUARIO
-    if (req.user) {
-      console.log('✅ USUARIO ENCONTRADO EN REQ.USER:');
-      console.log('   ID:', req.user.id);
-      console.log('   Nombres:', req.user.nombres);
-      console.log('   Apellidos:', req.user.apellidos);
-      console.log('   Tipo de usuario:', req.user.tipoUsuario);
-      console.log('   Todos los campos:', Object.keys(req.user));
-      
-      laboratoristaId = req.user.id;
-      nombreLaboratorista = `${req.user.nombres} ${req.user.apellidos}`;
-    } else {
-      console.log('❌ NO HAY USUARIO EN REQ.USER');
-      console.log('   Posibles causas:');
-      console.log('   - Middleware de auth no está siendo ejecutado');
-      console.log('   - Token no válido o expirado');
-      console.log('   - Ruta no protegida con middleware de auth');
-    }
+    // 2️⃣ Contraseña visible
+    const claveAcceso = contrasena;
 
-    console.log('📝 VALORES QUE SE GUARDARÁN:');
-    console.log('   laboratoristaId:', laboratoristaId);
-    console.log('   nombreLaboratorista:', nombreLaboratorista);
+    // 3️⃣ Contraseña encriptada
+    const contrasenaHash = await bcrypt.hash(contrasena, 10);
 
+    // 4️⃣ Usuario que registró
+    let laboratoristaId = req.usuario ? req.usuario.id : null;
+let nombreLaboratorista = req.usuario ? `${req.usuario.nombres} ${req.usuario.apellidos}` : null;
+
+
+    // 5️⃣ Crear paciente
     const nuevoPaciente = await Paciente.create({
       nombres, apellidos, cedula, fechaNacimiento, edad,
       estadoSalud, direccion, telefono, correo,
-      alergias, usuario, contrasena, sexo,
-      laboratoristaId, 
+      alergias, usuario, sexo,
+      claveAcceso,            // ✅ visible
+      contrasenaHash,         // ✅ encriptada
+      laboratoristaId,
       nombreLaboratorista
     });
 
-    // VERIFICAR QUÉ SE GUARDÓ REALMENTE
-    const pacienteCreado = await Paciente.findByPk(nuevoPaciente.id);
-    console.log('✅ PACIENTE GUARDADO EN BD:');
-    console.log('   ID:', pacienteCreado.id);
-    console.log('   laboratoristaId:', pacienteCreado.laboratoristaId);
-    console.log('   nombreLaboratorista:', pacienteCreado.nombreLaboratorista);
+    return res.status(201).json({
+      mensaje: 'Paciente registrado correctamente ✅',
+      paciente: nuevoPaciente
+    });
 
-    res.status(201).json(nuevoPaciente);
   } catch (error) {
     console.error('❌ Error al registrar paciente:', error);
     res.status(500).json({ mensaje: 'Error al registrar paciente' });
   }
+
 };
 
-// En paciente.controller.js - AGREGAR ESTA FUNCIÓN
-const debugUserInfo = async (req, res) => {
-  console.log('🔍 DEBUG USER INFO:');
-  console.log('Headers:', req.headers);
-  console.log('User object:', req.user);
-  console.log('Auth header:', req.header('Authorization'));
-  
-  res.json({
-    user: req.user,
-    headers: req.headers,
-    authHeader: req.header('Authorization'),
-    message: req.user ? 'Usuario autenticado' : 'No autenticado'
-  });
-};
+
+
+
+
 
 module.exports = {
   // CRUD BÁSICO

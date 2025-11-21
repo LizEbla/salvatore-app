@@ -1,3 +1,5 @@
+//models/Paciente.model.js
+
 module.exports = (sequelize, DataTypes) => {
   const Paciente = sequelize.define('Paciente', {
 
@@ -47,10 +49,15 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       unique: true
     },
-    contrasena: {
-      type: DataTypes.STRING,
-      allowNull: false
-    },
+    claveAcceso: { // Contraseña visible para el laboratorista/admin
+  type: DataTypes.STRING,
+  allowNull: false
+},
+contrasenaHash: { // Contraseña encriptada para login
+  type: DataTypes.STRING,
+  allowNull: false
+},
+
     laboratoristaId: {
       type: DataTypes.INTEGER
     },
@@ -80,11 +87,11 @@ module.exports = (sequelize, DataTypes) => {
   });
 
   Paciente.associate = function(models) {
-  Paciente.belongsToMany(models.Examen, {
-    through: 'PacienteExamen',
-    foreignKey: 'pacienteId',
-    as: 'Examenes'
-  });
+  Paciente.hasMany(models.ExamenPaciente, { 
+  foreignKey: 'pacienteId',
+  as: 'ExamenesPaciente'
+});
+
 };
 
   return Paciente;

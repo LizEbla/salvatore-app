@@ -1,68 +1,13 @@
 
+
 // ✅ IMPORTACIONES CORRECTAS
-const db = require('../models'); // Importa todos los modelos
-const { sequelize } = db; // Extrae sequelize
-const { ExamenPaciente, ExamenPacienteDetalle, Examen, Subexamen, Pago } = db; // Extrae los modelos
-const { Op } = require('sequelize'); // ✅ IMPORTAR Op DIRECTAMENTE
+const db = require('../models');
+const { sequelize } = db;
+const { ExamenPaciente, ExamenPacienteDetalle, Examen, Subexamen, Pago, Paciente, Area   } = db;
+const { Op } = require('sequelize');
 
 
-// FUNCIÓN AUXILIAR PARA BUSCAR CABECERAS
-const buscarCabecerasPorFecha = async (pacienteId, fecha) => {
-  try {
-    console.log('🔍 BÚSQUEDA MEJORADA POR FECHA:', { pacienteId, fecha });
-    
-    let fechaInicio, fechaFin;
 
-    if (fecha.includes('T')) {
-      const fechaObj = new Date(fecha);
-      fechaInicio = new Date(Date.UTC(
-        fechaObj.getUTCFullYear(),
-        fechaObj.getUTCMonth(),
-        fechaObj.getUTCDate(),
-        0, 0, 0, 0
-      ));
-      fechaFin = new Date(Date.UTC(
-        fechaObj.getUTCFullYear(),
-        fechaObj.getUTCMonth(),
-        fechaObj.getUTCDate(),
-        23, 59, 59, 999
-      ));
-    } else {
-      fechaInicio = new Date(fecha + 'T00:00:00.000Z');
-      fechaFin = new Date(fecha + 'T23:59:59.999Z');
-    }
-
-    const cabeceras = await ExamenPaciente.findAll({
-      where: {
-        pacienteId: pacienteId,
-        fechaAsignacion: {
-          [Op.between]: [fechaInicio, fechaFin]
-        }
-      },
-      include: [
-        {
-          model: ExamenPacienteDetalle,
-          as: 'Detalles',
-          include: [
-            {
-              model: Examen,
-              as: 'Examen',
-              include: [{ model: Area, as: 'Area' }]
-            }
-          ]
-        }
-      ],
-      order: [['fechaAsignacion', 'DESC']]
-    });
-
-    console.log(`✅ BÚSQUEDA COMPLETADA: ${cabeceras.length} cabeceras encontradas`);
-    return cabeceras;
-    
-  } catch (error) {
-    console.error('❌ Error en buscarCabecerasPorFecha:', error);
-    throw error;
-  }
-};
 
 // ACTUALIZAR ESTADO DE PAGO
 const actualizarEstadoPago = async (req, res) => {
@@ -415,64 +360,379 @@ const diagnosticoCompletoPago = async (req, res) => {
 
 
 
-// ✅ CONTROLADOR CORREGIDO PARA PROCESAR PAGO GRUPAL
-const procesarPagoGrupal = async (req, res) => {
-  let transaction;
-  
+// ✅ MÉTODO AUXILIAR para obtener fechas disponibles
+const obtenerFechasDisponibles = async (pacienteId) => {
   try {
-    console.log('🔄 Iniciando transacción...');
-    transaction = await sequelize.transaction();
+    const examenes = await ExamenPaciente.findAll({
+      where: { pacienteId },
+      attributes: ['fechaAsignacion'],
+      group: ['fechaAsignacion'],
+      raw: true
+    });
     
+    return examenes.map(e => e.fechaAsignacion.toISOString().split('T')[0]);
+  } catch (error) {
+    return [];
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/////////////////////////////////////////////////////
+
+// ✅ FUNCIÓN AUXILIAR PARA OBTENER PRECIO - COLOCAR AL INICIO DEL ARCHIVO
+const obtenerPrecioExamen = (examen) => {
+  console.log(`🔍 Calculando precio para examenPaciente ID: ${examen.id}`);
+  
+  // 1. Intentar obtener precio de ExamenPaciente directamente
+  let precio = parseFloat(examen.precioFinal) || parseFloat(examen.precio) || parseFloat(examen.total) || 0;
+  
+  // 2. Si no tiene precio, buscar en los detalles
+  if (precio === 0 && examen.Detalles && examen.Detalles.length > 0) {
+    console.log(`📋 Buscando precio en ${examen.Detalles.length} detalles...`);
+    
+    for (const detalle of examen.Detalles) {
+      // Buscar precio en el detalle
+      const precioDetalle = parseFloat(detalle.precioFinal) || parseFloat(detalle.precioAplicado) || 0;
+      
+      if (precioDetalle > 0) {
+        precio = precioDetalle;
+        console.log(`💰 Precio encontrado en detalle: ${precio}`);
+        break;
+      }
+      
+      // Buscar precio en el examen relacionado
+      if (detalle.Examen) {
+        const precioExamen = parseFloat(detalle.Examen.precio) || 0;
+        if (precioExamen > 0) {
+          precio = precioExamen;
+          console.log(`💰 Precio encontrado en examen relacionado: ${precio}`);
+          break;
+        }
+      }
+      
+      // Buscar precio en subexamen relacionado
+      if (detalle.Subexamen) {
+        const precioSubexamen = parseFloat(detalle.Subexamen.precio) || 0;
+        if (precioSubexamen > 0) {
+          precio = precioSubexamen;
+          console.log(`💰 Precio encontrado en subexamen relacionado: ${precio}`);
+          break;
+        }
+      }
+    }
+  }
+  
+  // 3. Si aún no hay precio, usar valor por defecto basado en detalles
+  if (precio === 0 && examen.Detalles && examen.Detalles.length > 0) {
+    precio = examen.Detalles.length * 10; // Precio por defecto
+    console.log(`⚠️ Usando precio por defecto: ${precio}`);
+  }
+  
+  console.log(`💰 Examen ${examen.id} - Precio final calculado: ${precio}`);
+  return precio;
+};
+
+
+// ✅ FUNCIÓN AUXILIAR PARA BUSCAR CABECERAS (SI LA NECESITAS)
+const buscarCabecerasPorFecha = async (pacienteId, fecha) => {
+  try {
+    console.log('🔍 BÚSQUEDA MEJORADA POR FECHA:', { pacienteId, fecha });
+    
+    const fechaInicio = new Date(fecha + 'T00:00:00.000Z');
+    const fechaFin = new Date(fecha + 'T23:59:59.999Z');
+
+    const cabeceras = await db.ExamenPaciente.findAll({
+      where: {
+        pacienteId: pacienteId,
+        fechaAsignacion: {
+          [Op.between]: [fechaInicio, fechaFin]
+        }
+      },
+      include: [
+        {
+          model: db.ExamenPacienteDetalle,
+          as: 'Detalles',
+          include: [
+            {
+              model: db.Examen,
+              as: 'Examen',
+              attributes: ['id', 'nombre', 'precio']
+            }
+          ]
+        }
+      ],
+      order: [['fechaAsignacion', 'DESC']]
+    });
+
+    console.log(`✅ BÚSQUEDA COMPLETADA: ${cabeceras.length} cabeceras encontradas`);
+    return cabeceras;
+    
+  } catch (error) {
+    console.error('❌ Error en buscarCabecerasPorFecha:', error);
+    throw error;
+  }
+};
+
+
+// ✅ FUNCIÓN DE DIAGNÓSTICO DE FECHAS (temporal)
+const diagnosticarFechasPagoGrupal = async (req, res) => {
+  try {
+    const { pacienteId, fecha } = req.body;
+    
+    console.log('🔍 DIAGNÓSTICO FECHAS PAGO GRUPAL:', { pacienteId, fecha });
+
+    // Buscar TODOS los exámenes del paciente
+    const todosExamenes = await db.ExamenPaciente.findAll({
+      where: { pacienteId },
+      attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago'],
+      order: [['fechaAsignacion', 'DESC']]
+    });
+
+    // Buscar con diferentes formatos de fecha
+    const fechaUTCInicio = new Date(fecha + 'T00:00:00.000Z');
+    const fechaUTCFin = new Date(fecha + 'T23:59:59.999Z');
+    
+    const fechaLocalInicio = new Date(fecha + 'T00:00:00.000-05:00');
+    const fechaLocalFin = new Date(fecha + 'T23:59:59.999-05:00');
+
+    const examenesUTC = await db.ExamenPaciente.findAll({
+      where: {
+        pacienteId,
+        fechaAsignacion: { [Op.between]: [fechaUTCInicio, fechaUTCFin] }
+      }
+    });
+
+    const examenesLocal = await db.ExamenPaciente.findAll({
+      where: {
+        pacienteId,
+        fechaAsignacion: { [Op.between]: [fechaLocalInicio, fechaLocalFin] }
+      }
+    });
+
+    res.json({
+      success: true,
+      diagnostico: {
+        fechaSolicitada: fecha,
+        totalExamenesPaciente: todosExamenes.length,
+        examenesEncontradosUTC: examenesUTC.length,
+        examenesEncontradosLocal: examenesLocal.length,
+        todosExamenes: todosExamenes.map(ex => ({
+          id: ex.id,
+          fechaAsignacion: ex.fechaAsignacion,
+          fechaISO: ex.fechaAsignacion.toISOString(),
+          fechaLocal: ex.fechaAsignacion.toString(),
+          total: ex.total,
+          abono: ex.abono,
+          estadoPago: ex.estadoPago
+        })),
+        rangosBusqueda: {
+          UTC: {
+            inicio: fechaUTCInicio.toISOString(),
+            fin: fechaUTCFin.toISOString()
+          },
+          Local: {
+            inicio: fechaLocalInicio.toISOString(),
+            fin: fechaLocalFin.toISOString()
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error en diagnóstico:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+
+
+
+// ✅ DIAGNÓSTICO COMPLETO DEL PROBLEMA DE FECHAS
+const diagnosticoCompletoFechas = async (req, res) => {
+  try {
+    const { pacienteId } = req.params;
+    
+    console.log('🔍 DIAGNÓSTICO COMPLETO DE FECHAS PARA PACIENTE:', pacienteId);
+
+    // 1. Obtener TODOS los exámenes del paciente
+    const todosExamenes = await db.ExamenPaciente.findAll({
+      where: { pacienteId },
+      attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago', 'createdAt', 'updatedAt'],
+      order: [['fechaAsignacion', 'DESC']],
+      raw: true
+    });
+
+    // 2. Analizar diferencias entre fechas
+    const analisisFechas = todosExamenes.map(examen => {
+      const fechaAsignacion = new Date(examen.fechaAsignacion);
+      const createdAt = new Date(examen.createdAt);
+      
+      return {
+        id: examen.id,
+        fechaAsignacion: {
+          original: examen.fechaAsignacion,
+          iso: fechaAsignacion.toISOString(),
+          local: fechaAsignacion.toLocaleString('es-EC'),
+          dateOnly: fechaAsignacion.toLocaleDateString('es-EC'),
+          time: fechaAsignacion.toLocaleTimeString('es-EC')
+        },
+        createdAt: {
+          original: examen.createdAt,
+          iso: createdAt.toISOString(),
+          local: createdAt.toLocaleString('es-EC'),
+          dateOnly: createdAt.toLocaleDateString('es-EC')
+        },
+        diferenciaHoras: (createdAt - fechaAsignacion) / (1000 * 60 * 60),
+        total: examen.total,
+        estadoPago: examen.estadoPago
+      };
+    });
+
+    // 3. Agrupar por fecha local
+    const agrupacionPorFecha = {};
+    analisisFechas.forEach(examen => {
+      const fechaKey = examen.fechaAsignacion.dateOnly;
+      
+      if (!agrupacionPorFecha[fechaKey]) {
+        agrupacionPorFecha[fechaKey] = [];
+      }
+      
+      agrupacionPorFecha[fechaKey].push(examen);
+    });
+
+    // 4. Buscar inconsistencias
+    const inconsistencias = analisisFechas.filter(examen => 
+      Math.abs(examen.diferenciaHoras) > 24 || // Más de 1 día de diferencia
+      examen.fechaAsignacion.dateOnly !== examen.createdAt.dateOnly
+    );
+
+    res.json({
+      success: true,
+      diagnostico: {
+        pacienteId,
+        totalExamenes: todosExamenes.length,
+        fechasUnicas: Object.keys(agrupacionPorFecha),
+        agrupacionPorFecha,
+        analisisDetallado: analisisFechas,
+        inconsistencias: {
+          count: inconsistencias.length,
+          detalles: inconsistencias
+        },
+        resumen: `El paciente tiene ${todosExamenes.length} exámenes agrupados en ${Object.keys(agrupacionPorFecha).length} fechas diferentes`
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error en diagnóstico completo:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+// ✅ ACTUALIZAR MÉTODO PARA OBTENER DATOS ACTUALIZADOS
+const obtenerDatosActualizados = async (req, res) => {
+  try {
+    const { pacienteId, fecha } = req.params;
+    
+    console.log('🔄 OBTENIENDO DATOS ACTUALIZADOS:', { pacienteId, fecha });
+
+    const fechaInicio = new Date(fecha + 'T00:00:00-05:00');
+    const fechaFin = new Date(fecha + 'T23:59:59.999-05:00');
+
+    const examenes = await ExamenPaciente.findAll({
+      where: {
+        pacienteId: pacienteId,
+        fechaAsignacion: {
+          [Op.between]: [fechaInicio, fechaFin]
+        }
+      },
+      attributes: ['id', 'total', 'abono', 'saldoPendiente', 'estadoPago', 'fechaAsignacion']
+    });
+
+    // ✅ CALCULAR TOTALES ACTUALIZADOS
+    let total = 0;
+    let abono = 0;
+    let pendiente = 0;
+
+    examenes.forEach(examen => {
+      total += parseFloat(examen.total || 0);
+      abono += parseFloat(examen.abono || 0);
+      pendiente += parseFloat(examen.saldoPendiente || 0);
+    });
+
+    const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'abono' : 'pendiente');
+
+    res.json({
+      success: true,
+      datos: {
+        total,
+        abono,
+        pendiente,
+        estadoPago: estadoPago,
+        cantidadExamenes: examenes.length,
+        examenes: examenes.map(ex => ({
+          id: ex.id,
+          total: ex.total,
+          abono: ex.abono,
+          saldoPendiente: ex.saldoPendiente,
+          estadoPago: ex.estadoPago,
+          fecha: ex.fechaAsignacion
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo datos actualizados:', error);
+    res.status(500).json({
+      success: false,
+      mensaje: 'Error obteniendo datos actualizados',
+      error: error.message
+    });
+  }
+};
+
+// ✅ VERSIÓN COMPLETAMENTE CORREGIDA - PROCESAR PAGO GRUPAL
+// ✅ VERSIÓN CORREGIDA - PROCESAR PAGO GRUPAL
+const procesarPagoGrupal = async (req, res) => {
+  try {
     const { pacienteId, fecha, montoTotal, metodoPago, laboratoristaId } = req.body;
     
-    console.log('💰 BACKEND - PROCESANDO PAGO GRUPAL:', {
-      pacienteId, 
-      fecha, 
-      montoTotal, 
-      metodoPago, 
-      laboratoristaId
+    console.log('💰 BACKEND - PROCESANDO PAGO GRUPAL CORREGIDO:', {
+      pacienteId, fecha, montoTotal, metodoPago, laboratoristaId
     });
 
-    // ✅ VALIDACIONES BÁSICAS
-    if (!pacienteId || !fecha || !montoTotal || !metodoPago) {
-      await transaction.rollback();
-      return res.status(400).json({
-        success: false,
-        mensaje: 'Datos incompletos. Se requieren: pacienteId, fecha, montoTotal, metodoPago'
-      });
-    }
+    // ✅ CORRECCIÓN: Usar fecha LOCAL (Ecuador UTC-5)
+    const fechaInicio = new Date(fecha + 'T00:00:00-05:00');
+    const fechaFin = new Date(fecha + 'T23:59:59.999-05:00');
 
-    if (montoTotal <= 0) {
-      await transaction.rollback();
-      return res.status(400).json({
-        success: false,
-        mensaje: 'El monto debe ser mayor a cero'
-      });
-    }
-
-    // ✅ CORREGIR MANEJO DE FECHAS - VERSIÓN MEJORADA
-    console.log('📅 FECHA RECIBIDA:', fecha);
-    
-    // Crear fecha en UTC para evitar problemas de zona horaria
-    const fechaUTC = new Date(fecha + 'T00:00:00.000Z');
-    
-    // Rango de 24 horas en UTC
-    const fechaInicio = new Date(fechaUTC);
-    const fechaFin = new Date(fechaUTC);
-    fechaFin.setDate(fechaFin.getDate() + 1);
-    fechaFin.setMilliseconds(fechaFin.getMilliseconds() - 1);
-
-    console.log('🔍 FECHAS CORREGIDAS PARA BÚSQUEDA:', {
-      fechaRecibida: fecha,
+    console.log('📅 RANGO DE BÚSQUEDA (LOCAL Ecuador):', {
+      fechaSolicitada: fecha,
       fechaInicio: fechaInicio.toISOString(),
       fechaFin: fechaFin.toISOString(),
-      fechaInicioLocal: new Date(fechaInicio).toString(),
-      fechaFinLocal: new Date(fechaFin).toString()
+      fechaInicioLocal: fechaInicio.toLocaleString('es-EC'),
+      fechaFinLocal: fechaFin.toLocaleString('es-EC')
     });
 
-    // ✅ BUSCAR EXAMENES PACIENTE CON FECHAS CORREGIDAS
+    // Buscar exámenes en el rango LOCAL
     const examenesPaciente = await ExamenPaciente.findAll({
-      where: { 
+      where: {
         pacienteId: pacienteId,
         fechaAsignacion: {
           [Op.between]: [fechaInicio, fechaFin]
@@ -481,209 +741,312 @@ const procesarPagoGrupal = async (req, res) => {
       include: [
         {
           model: ExamenPacienteDetalle,
-          as: 'Detalles'
+          as: 'Detalles',
+          attributes: ['id', 'precioFinal', 'estado', 'nombreExamen']
         }
-      ],
-      transaction
+      ]
     });
 
-    console.log(`🔍 ExamenesPaciente encontrados: ${examenesPaciente.length}`);
-    
-    // ✅ DEBUG: Mostrar las fechas de los exámenes encontrados
-    if (examenesPaciente.length > 0) {
-      examenesPaciente.forEach((examen, index) => {
-        console.log(`📋 Examen ${index + 1}:`, {
-          id: examen.id,
-          fechaAsignacion: examen.fechaAsignacion,
-          fechaAsignacionISO: examen.fechaAsignacion.toISOString(),
-          fechaAsignacionLocal: new Date(examen.fechaAsignacion).toString(),
-          total: examen.total
-        });
-      });
-    } else {
-      // ✅ DEBUG ADICIONAL: Buscar todos los exámenes del paciente para debug
-      const todosExamenes = await ExamenPaciente.findAll({
+    console.log(`🔍 ExamenPaciente encontrados para ${fecha}:`, examenesPaciente.length);
+
+    if (examenesPaciente.length === 0) {
+      // Diagnóstico adicional
+      const todasFechas = await ExamenPaciente.findAll({
         where: { pacienteId: pacienteId },
         attributes: ['id', 'fechaAsignacion', 'total'],
         order: [['fechaAsignacion', 'DESC']],
-        limit: 10
+        raw: true
       });
       
-      console.log('🔍 ÚLTIMOS 10 EXÁMENES DEL PACIENTE:');
-      todosExamenes.forEach(examen => {
-        console.log(`   - ID: ${examen.id}, Fecha: ${examen.fechaAsignacion}, FechaLocal: ${new Date(examen.fechaAsignacion).toString()}, Total: $${examen.total}`);
-      });
-    }
-
-    if (examenesPaciente.length === 0) {
-      await transaction.rollback();
-      return res.status(400).json({
+      const fechasFormateadas = todasFechas.map(f => 
+        new Date(f.fechaAsignacion).toLocaleDateString('es-EC')
+      );
+      
+      console.log('📋 FECHAS DISPONIBLES PARA ESTE PACIENTE:', fechasFormateadas);
+      
+      return res.status(404).json({
         success: false,
-        mensaje: `No se encontraron exámenes para el paciente ${pacienteId} en la fecha ${fecha}. Verifique la fecha.`
+        mensaje: `No se encontraron exámenes para la fecha ${fecha}`,
+        fechasDisponibles: fechasFormateadas,
+        detalleExamenes: todasFechas.map(e => ({
+          id: e.id,
+          fechaAsignacion: e.fechaAsignacion,
+          fechaLocal: new Date(e.fechaAsignacion).toLocaleDateString('es-EC'),
+          total: e.total
+        }))
       });
     }
 
-    // ✅ CALCULAR TOTALES
+
+    // ✅ CALCULAR TOTALES ACTUALES DEL GRUPO
     let totalGrupo = 0;
-    let abonoActual = 0;
-    let saldoPendienteActual = 0;
-    
-    for (const examenPaciente of examenesPaciente) {
-      totalGrupo += parseFloat(examenPaciente.total || 0);
-      abonoActual += parseFloat(examenPaciente.abono || 0);
-      saldoPendienteActual += parseFloat(examenPaciente.saldoPendiente || 0);
-    }
+    let abonoActualGrupo = 0;
+    let saldoPendienteGrupo = 0;
+console.log('🔍 DEBUG - DETALLE DE CADA EXAMEN:');
 
-    console.log('📊 TOTALES CALCULADOS:', {
-      totalGrupo, 
-      abonoActual, 
-      saldoPendienteActual, 
-      montoTotal
+    examenesPaciente.forEach(examen => {
+      totalGrupo += parseFloat(examen.total || 0);
+      abonoActualGrupo += parseFloat(examen.abono || 0);
     });
 
-    // ✅ VALIDAR MONTO
-    if (parseFloat(montoTotal) > saldoPendienteActual) {
-      await transaction.rollback();
+    saldoPendienteGrupo = Math.max(0, totalGrupo - abonoActualGrupo);
+
+    console.log('💰 ESTADO ACTUAL DEL GRUPO:', {
+      totalGrupo,
+      abonoActualGrupo,
+      saldoPendienteGrupo,
+      montoPagado: montoTotal,
+      examenesCount: examenesPaciente.length
+    });
+
+    // ✅ VERIFICAR QUE EL MONTO NO EXCEDA EL SALDO
+    const montoNumerico = parseFloat(montoTotal);
+    if (montoNumerico > saldoPendienteGrupo) {
       return res.status(400).json({
         success: false,
-        mensaje: `El monto a pagar ($${montoTotal}) no puede ser mayor al saldo pendiente ($${saldoPendienteActual.toFixed(2)})`
+        mensaje: `El monto ($${montoNumerico.toFixed(2)}) excede el saldo pendiente ($${saldoPendienteGrupo.toFixed(2)})`,
+        saldoPendienteActual: saldoPendienteGrupo,
+        totalGrupo: totalGrupo,
+        abonoActual: abonoActualGrupo
       });
     }
 
-    // ✅ ACTUALIZAR EXAMENES PACIENTE
-    const montoPago = parseFloat(montoTotal);
-    const nuevoAbonoTotal = abonoActual + montoPago;
-    const nuevoSaldoPendiente = Math.max(0, saldoPendienteActual - montoPago);
+    // ✅ CALCULAR NUEVOS VALORES
+    const nuevoAbonoGrupo = abonoActualGrupo + montoNumerico;
+    const nuevoSaldoPendiente = Math.max(0, totalGrupo - nuevoAbonoGrupo);
     
-    console.log('🔄 ACTUALIZANDO EXAMENES:', {
-      examenesCount: examenesPaciente.length,
-      montoPago,
-      nuevoAbonoTotal,
-      nuevoSaldoPendiente
+    let estadoPagoGrupo;
+    if (nuevoSaldoPendiente <= 0) {
+      estadoPagoGrupo = 'pagado';
+    } else if (nuevoAbonoGrupo > 0) {
+      estadoPagoGrupo = 'abono';
+    } else {
+      estadoPagoGrupo = 'pendiente';
+    }
+
+    // ✅ ACTUALIZAR CADA ExamenPaciente (CABECERA)
+    const examenesActualizados = [];
+    
+    for (const examen of examenesPaciente) {
+      const precioExamen = parseFloat(examen.total || 0);
+      const abonoActual = parseFloat(examen.abono || 0);
+      const saldoExamen = Math.max(0, precioExamen - abonoActual);
+      
+      // Distribuir el pago proporcionalmente entre los exámenes
+      let abonoAdicional = 0;
+      if (saldoPendienteGrupo > 0) {
+        const proporcion = saldoExamen / saldoPendienteGrupo;
+        abonoAdicional = montoNumerico * proporcion;
+      }
+      
+      const nuevoAbono = abonoActual + abonoAdicional;
+      
+      let nuevoEstadoPago;
+      if (nuevoAbono >= precioExamen) {
+        nuevoEstadoPago = 'pagado';
+      } else if (nuevoAbono > 0) {
+        nuevoEstadoPago = 'abono';
+      } else {
+        nuevoEstadoPago = 'pendiente';
+      }
+
+      // Actualizar el examen
+      await examen.update({
+        abono: nuevoAbono,
+        estadoPago: nuevoEstadoPago,
+        metodoPago: metodoPago,
+        saldoPendiente: Math.max(0, precioExamen - nuevoAbono)
+      });
+
+      examenesActualizados.push({
+        id: examen.id,
+        total: precioExamen,
+        abonoAnterior: abonoActual,
+        abonoNuevo: nuevoAbono,
+        estadoPago: nuevoEstadoPago,
+        detallesCount: examen.Detalles?.length || 0
+      });
+    }
+
+    // ✅ CREAR REGISTRO DE PAGO
+    const nuevoPago = await Pago.create({
+      pacienteId: pacienteId,
+      laboratoristaId: laboratoristaId || 1,
+      monto: montoNumerico,
+      metodoPago: metodoPago,
+      tipo: 'grupal',
+      estado: 'completado',
+      fechaPago: new Date(),
+      referencia: `Pago grupal - ${fecha} - ${examenesPaciente.length} exámenes`
     });
 
-    // Si el monto cubre exactamente el saldo pendiente, distribuir proporcionalmente
-    for (const examenPaciente of examenesPaciente) {
-      const saldoExamenActual = parseFloat(examenPaciente.saldoPendiente || 0);
-      
-      if (saldoExamenActual > 0) {
-        const proporcion = saldoExamenActual / saldoPendienteActual;
-        const abonoParaEsteExamen = montoPago * proporcion;
-        const nuevoAbonoExamen = parseFloat(examenPaciente.abono || 0) + abonoParaEsteExamen;
-        const nuevoSaldoExamen = Math.max(0, parseFloat(examenPaciente.total) - nuevoAbonoExamen);
-        
-        // Determinar estado
-        let estadoPago = 'parcial';
-        if (nuevoSaldoExamen <= 0.01) { // Tolerancia para decimales
-          estadoPago = 'pagado';
-        } else if (nuevoAbonoExamen === 0) {
-          estadoPago = 'pendiente';
-        }
+    console.log('✅ PAGO GRUPAL PROCESADO EXITOSAMENTE:', {
+      pagoId: nuevoPago.id,
+      estadoPagoGrupo,
+      totalGrupo,
+      abonoTotal: nuevoAbonoGrupo,
+      saldoPendiente: nuevoSaldoPendiente,
+      examenesActualizados: examenesActualizados.length,
+      fechaProcesada: fecha
+    });
 
-        await examenPaciente.update({
-          abono: parseFloat(nuevoAbonoExamen.toFixed(2)),
-          saldoPendiente: parseFloat(nuevoSaldoExamen.toFixed(2)),
-          estadoPago: estadoPago,
-          metodoPago: metodoPago // Actualizar método de pago también
-        }, { transaction });
-
-        console.log(`✅ ExamenPaciente ${examenPaciente.id} actualizado:`, {
-          abono: nuevoAbonoExamen.toFixed(2),
-          saldo: nuevoSaldoExamen.toFixed(2),
-          estado: estadoPago
-        });
-      }
-    }
-
-    // ✅ REGISTRAR PAGO (OPCIONAL)
-    let nuevoPago = null;
-    try {
-      if (sequelize.models.Pago) {
-        nuevoPago = await Pago.create({
-          pacienteId: pacienteId,
-          monto: montoPago,
-          metodoPago: metodoPago,
-          fechaPago: new Date(),
-          laboratoristaId: laboratoristaId || 1,
-          tipoPago: 'grupal',
-          referencia: `Pago grupal - ${fecha}`,
-          estado: 'completado'
-        }, { transaction });
-        console.log('💰 Pago registrado:', nuevoPago.id);
-      }
-    } catch (pagoError) {
-      console.warn('⚠️ No se pudo registrar en tabla Pago:', pagoError.message);
-    }
-
-    // ✅ CONFIRMAR TRANSACCIÓN
-    await transaction.commit();
-    console.log('✅ Transacción completada exitosamente');
-
-    // ✅ RESPUESTA EXITOSA
     res.json({
       success: true,
-      mensaje: `Pago de $${montoTotal} procesado exitosamente. Saldo pendiente: $${nuevoSaldoPendiente.toFixed(2)}`,
-      grupo: {
-        total: totalGrupo,
-        abono: nuevoAbonoTotal,
-        pendiente: nuevoSaldoPendiente,
-        estadoPago: nuevoSaldoPendiente <= 0 ? 'pagado' : 'parcial',
-        examenesPaciente: examenesPaciente.length
+      mensaje: `Pago grupal de $${montoNumerico.toFixed(2)} procesado exitosamente para ${examenesPaciente.length} exámenes`,
+      pago: {
+        id: nuevoPago.id,
+        monto: montoNumerico,
+        metodoPago: metodoPago,
+        fecha: nuevoPago.fechaPago,
+        referencia: nuevoPago.referencia
       },
-      saldoActualizado: nuevoSaldoPendiente
+      grupo: {
+        estadoPago: estadoPagoGrupo,
+        financiero: {
+          total: totalGrupo,
+          abonado: nuevoAbonoGrupo,
+          pendiente: nuevoSaldoPendiente
+        },
+        examenesActualizados: examenesActualizados.length,
+        fecha: fecha
+      },
+      detalles: {
+        examenes: examenesActualizados,
+        pagoId: nuevoPago.id
+      }
     });
 
   } catch (error) {
-    // ✅ REVERTIR EN CASO DE ERROR
-    if (transaction) {
-      await transaction.rollback();
-      console.log('🔴 Transacción revertida');
-    }
-    
-    console.error('❌ Error en procesarPagoGrupal:', error);
-    
+    console.error('❌ ERROR EN PAGO GRUPAL:', error);
     res.status(500).json({
       success: false,
-      mensaje: 'Error interno del servidor al procesar el pago',
-      error: error.message
+      mensaje: 'Error interno del servidor al procesar pago grupal',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
 
-// ✅ CONTROLADOR CORREGIDO PARA RESUMEN GRUPAL
+
+
+// ✅ VERSIÓN COMPLETAMENTE CORREGIDA - OBTENER RESUMEN GRUPAL
 const obtenerResumenGrupalPorFecha = async (req, res) => {
   try {
     const { pacienteId, fecha } = req.params;
     
-    console.log('📊 OBTENIENDO RESUMEN GRUPAL:', { pacienteId, fecha });
-    
-    // ✅ CORREGIR MANEJO DE FECHAS - VERSIÓN MEJORADA
-    const fechaUTC = new Date(fecha + 'T00:00:00.000Z');
-    
-    const fechaInicio = new Date(fechaUTC);
-    const fechaFin = new Date(fechaUTC);
-    fechaFin.setDate(fechaFin.getDate() + 1);
-    fechaFin.setMilliseconds(fechaFin.getMilliseconds() - 1);
+    console.log('📊 OBTENIENDO RESUMEN GRUPAL - FECHA SOLICITADA:', { pacienteId, fecha });
 
-    console.log('🔍 FECHAS CORREGIDAS PARA BÚSQUEDA:', {
-      fechaRecibida: fecha,
+    // ✅ CORRECCIÓN CRÍTICA: Usar fecha local (Ecuador UTC-5)
+    const fechaInicio = new Date(fecha + 'T00:00:00-05:00');
+    const fechaFin = new Date(fecha + 'T23:59:59.999-05:00');
+
+    console.log('🔍 RANGO DE BÚSQUEDA CORREGIDO (LOCAL Ecuador):', {
+      fechaSolicitada: fecha,
       fechaInicio: fechaInicio.toISOString(),
       fechaFin: fechaFin.toISOString(),
-      fechaInicioLocal: new Date(fechaInicio).toString(),
-      fechaFinLocal: new Date(fechaFin).toString()
+      fechaInicioLocal: fechaInicio.toLocaleString('es-EC'),
+      fechaFinLocal: fechaFin.toLocaleString('es-EC')
     });
 
-    const examenesPaciente = await ExamenPaciente.findAll({
+    // Buscar exámenes en el rango de fecha LOCAL
+    const examenesPaciente = await db.ExamenPaciente.findAll({
       where: { 
         pacienteId: pacienteId,
         fechaAsignacion: {
           [Op.between]: [fechaInicio, fechaFin]
         }
-      }
+      },
+      include: [
+        {
+          model: db.ExamenPacienteDetalle,
+          as: 'Detalles',
+          attributes: ['id', 'nombreExamen', 'precioFinal', 'estado']
+        }
+      ],
+      order: [['fechaAsignacion', 'DESC']]
     });
 
-    console.log(`📊 Exámenes encontrados: ${examenesPaciente.length}`);
+    console.log(`📊 Exámenes encontrados para ${fecha}:`, examenesPaciente.length);
 
+    // Si no encuentra, hacer diagnóstico detallado
+    if (examenesPaciente.length === 0) {
+      console.log('⚠️ No se encontraron exámenes, haciendo diagnóstico...');
+      
+      // Obtener TODOS los exámenes del paciente para diagnóstico
+      const todosExamenes = await db.ExamenPaciente.findAll({
+        where: { pacienteId },
+        attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago'],
+        order: [['fechaAsignacion', 'DESC']],
+        raw: true
+      });
+
+      console.log('🔍 TODOS LOS EXAMENES DEL PACIENTE:');
+      todosExamenes.forEach(examen => {
+        const fechaLocal = new Date(examen.fechaAsignacion).toLocaleDateString('es-EC');
+        const fechaISO = new Date(examen.fechaAsignacion).toISOString();
+        console.log(`   - ID: ${examen.id}, Fecha BD: ${examen.fechaAsignacion}`);
+        console.log(`     Fecha Local: ${fechaLocal}, Fecha ISO: ${fechaISO}`);
+        console.log(`     Total: ${examen.total}, Estado: ${examen.estadoPago}`);
+      });
+
+      // Buscar por fecha local como fallback
+      const examenesPorFechaLocal = todosExamenes.filter(examen => {
+        const fechaExamenLocal = new Date(examen.fechaAsignacion).toLocaleDateString('es-EC');
+        const fechaSolicitadaLocal = new Date(fecha + 'T00:00:00-05:00').toLocaleDateString('es-EC');
+        return fechaExamenLocal === fechaSolicitadaLocal;
+      });
+
+      console.log(`🔍 Búsqueda por fecha local: ${examenesPorFechaLocal.length} exámenes`);
+
+      // Usar los exámenes por fecha local si se encontraron
+      const examenesEnFecha = examenesPorFechaLocal.length > 0 ? 
+        await db.ExamenPaciente.findAll({
+          where: { id: examenesPorFechaLocal.map(e => e.id) },
+          include: [{ model: db.ExamenPacienteDetalle, as: 'Detalles' }]
+        }) : [];
+
+      let total = 0;
+      let abono = 0;
+      let pendiente = 0;
+      
+      for (const examen of examenesEnFecha) {
+        total += parseFloat(examen.total || 0);
+        abono += parseFloat(examen.abono || 0);
+        pendiente += (parseFloat(examen.total || 0) - parseFloat(examen.abono || 0));
+      }
+
+      const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'abono' : 'pendiente');
+
+      console.log('📈 RESUMEN FINAL (FALLBACK):', { 
+        total, 
+        abono, 
+        pendiente, 
+        estadoPago,
+        examenesCount: examenesEnFecha.length,
+        fechaSolicitada: fecha
+      });
+
+      return res.json({
+        success: true,
+        grupo: {
+          total,
+          abono,
+          pendiente,
+          estadoPago: estadoPago,
+          cantidadExamenes: examenesEnFecha.length,
+          fecha: fecha,
+          debug: {
+            busquedaLocal: examenesPaciente.length,
+            busquedaFallback: examenesPorFechaLocal.length,
+            fechaSolicitada: fecha,
+            metodoUtilizado: examenesPorFechaLocal.length > 0 ? 'fecha_local_fallback' : 'sin_examenes',
+            totalExamenesPaciente: todosExamenes.length
+          }
+        }
+      });
+    }
+
+    // ✅ CALCULAR TOTALES CON EXAMENES ENCONTRADOS
     let total = 0;
     let abono = 0;
     let pendiente = 0;
@@ -691,12 +1054,19 @@ const obtenerResumenGrupalPorFecha = async (req, res) => {
     for (const examen of examenesPaciente) {
       total += parseFloat(examen.total || 0);
       abono += parseFloat(examen.abono || 0);
-      pendiente += parseFloat(examen.saldoPendiente || 0);
+      pendiente += (parseFloat(examen.total || 0) - parseFloat(examen.abono || 0));
     }
 
-    const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'parcial' : 'pendiente');
+    const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'abono' : 'pendiente');
 
-    console.log('📈 RESUMEN CALCULADO:', { total, abono, pendiente, estadoPago });
+    console.log('📈 RESUMEN FINAL:', { 
+      total, 
+      abono, 
+      pendiente, 
+      estadoPago,
+      examenesCount: examenesPaciente.length,
+      fechaSolicitada: fecha
+    });
 
     res.json({
       success: true,
@@ -705,7 +1075,16 @@ const obtenerResumenGrupalPorFecha = async (req, res) => {
         abono,
         pendiente,
         estadoPago: estadoPago,
-        cantidadExamenes: examenesPaciente.length
+        cantidadExamenes: examenesPaciente.length,
+        fecha: fecha,
+        examenes: examenesPaciente.map(ex => ({
+          id: ex.id,
+          fechaAsignacion: ex.fechaAsignacion,
+          total: ex.total,
+          abono: ex.abono,
+          estadoPago: ex.estadoPago,
+          detallesCount: ex.Detalles?.length || 0
+        }))
       }
     });
 
@@ -719,6 +1098,8 @@ const obtenerResumenGrupalPorFecha = async (req, res) => {
   }
 };
 
+// ✅ VERSIÓN CORREGIDA - PROCESAR PAGO GRUPAL
+
 module.exports = {
   actualizarEstadoPago,
   registrarAbono,
@@ -728,5 +1109,8 @@ module.exports = {
   obtenerDetalleGrupoPago,
   diagnosticarFechasPago,
   diagnosticoCompletoPago,
-  buscarCabecerasPorFecha
+  buscarCabecerasPorFecha,
+  diagnosticarFechasPagoGrupal,
+  diagnosticoCompletoFechas,
+  obtenerDatosActualizados
 };

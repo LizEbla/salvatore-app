@@ -22,4 +22,15 @@ router.get('/paciente/:pacienteId/grupo-pago/:fecha', pagosController.obtenerDet
 router.get('/paciente/:pacienteId/diagnostico-fechas-pago/:fecha', pagosController.diagnosticarFechasPago);
 router.get('/paciente/:pacienteId/diagnostico-pago/:fecha', pagosController.diagnosticoCompletoPago);
 
+// =======================
+// 🔄 RUTAS DE ACTUALIZACIÓN
+// =======================
+router.get('/pacientes/:pacienteId/fecha/:fecha/datos-actualizados', pagosController.obtenerDatosActualizados); // ✅ CORREGIDO
+
+// =======================
+// 🩺 RUTAS DE DIAGNÓSTICO TEMPORALES
+// =======================
+router.post('/pagos/diagnostico-fechas', pagosController.diagnosticarFechasPagoGrupal);
+router.get('/pagos/diagnostico-fechas-completo/:pacienteId', pagosController.diagnosticoCompletoFechas);
+
 module.exports = router;

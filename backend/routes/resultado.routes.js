@@ -1,23 +1,15 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const resultadosController = require('../controllers/resultados.controller');
+const upload = require("../middleware/upload");
+const controller = require("../controllers/resultados.controller");
 
-// =======================
-// 📝 RUTAS PARA RESULTADOS
-// =======================
-router.post('/examen/:examenPacienteId/resultado', resultadosController.subirResultadoExamen);
-router.get('/examen/:examenPacienteId/detalles-resultados', resultadosController.obtenerDetallesResultados);
+// Guardar resultados sin firmar
+router.put("/:id/guardar", controller.guardarResultados);
 
-// =======================
-// 📄 RUTAS PARA PDFs
-// =======================
-router.post('/generar-pdf-resultados', resultadosController.generarPDFResultados);
-router.get('/paciente/:pacienteId/reporte-completo-pdf', resultadosController.generarPDFReporteCompleto);
+// Obtener PDF para firmar
+router.get("/:id/iniciar-firma", controller.iniciarFirma);
 
-// =======================
-// 📊 RUTAS DE HISTORIAL Y REPORTES
-// =======================
-router.get('/paciente/:pacienteId/historial-examenes/:nombreExamen', resultadosController.obtenerHistorialExamenes);
-router.get('/paciente/:pacienteId/reporte-estadistico', resultadosController.generarReporteEstadistico);
+// Firmar PDF (se sube archivo .p12)
+router.post("/:id/firmar", upload.single("certificado"), controller.firmarPdf);
 
 module.exports = router;
