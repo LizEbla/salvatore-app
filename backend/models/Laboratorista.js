@@ -1,4 +1,4 @@
-// models/laboratorista.model.js - VERSIÓN CORREGIDA
+// models/laboratorista.js - VERSIÓN CORREGIDA
 module.exports = (sequelize, DataTypes) => {
   const Laboratorista = sequelize.define('Laboratorista', {
     id: {
@@ -32,7 +32,10 @@ module.exports = (sequelize, DataTypes) => {
     rol: {
       type: DataTypes.STRING,
       allowNull: false,
-      defaultValue: 'laboratorista'
+      defaultValue: 'laboratorista',
+      validate: {
+        isIn: [['laboratorista', 'jefe_laboratorio', 'tecnico']] // ✅ Solo roles de laboratorio
+      }
     },
     especialidad: {
       type: DataTypes.STRING,

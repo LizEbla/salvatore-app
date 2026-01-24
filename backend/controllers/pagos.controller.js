@@ -1,146 +1,132 @@
+// controllers/pagos.controller.js  ✅ COMPLETO Y CORREGIDO (SIN INCONSISTENCIAS)
 
-
-// ✅ IMPORTACIONES CORRECTAS
 const db = require('../models');
 const { sequelize } = db;
-const { ExamenPaciente, ExamenPacienteDetalle, Examen, Subexamen, Pago, Paciente, Area   } = db;
+const { ExamenPaciente, ExamenPacienteDetalle, Examen, Area, Pago, Paciente } = db;
 const { Op } = require('sequelize');
 
-
-
-
-// ACTUALIZAR ESTADO DE PAGO
-const actualizarEstadoPago = async (req, res) => {
-  try {
-    const { examenPacienteId } = req.params;
-    const { estadoPago, metodoPago, abono } = req.body;
-
-    console.log('🔍 BACKEND - INICIANDO ACTUALIZACIÓN DE PAGO');
-    console.log('📦 Datos recibidos:', { 
-      examenPacienteId, 
-      estadoPago, 
-      metodoPago, 
-      abono 
-    });
-
-    const examenPaciente = await ExamenPaciente.findByPk(examenPacienteId);
-
-    if (!examenPaciente) {
-      console.log('❌ Examen no encontrado con ID:', examenPacienteId);
-      return res.status(404).json({ error: 'Examen no encontrado' });
-    }
-
-    const precioTotal = parseFloat(examenPaciente.precio) || 0;
-    const nuevoAbono = parseFloat(abono) || 0;
-    const saldoPendiente = precioTotal - nuevoAbono;
-
-    let estadoPagoFinal;
-    if (saldoPendiente <= 0) {
-      estadoPagoFinal = 'pagado';
-    } else if (nuevoAbono > 0) {
-      estadoPagoFinal = 'abono';
-    } else {
-      estadoPagoFinal = 'pendiente';
-    }
-
-    const updateData = { 
-      estadoPago: estadoPagoFinal,
-      metodoPago: metodoPago || 'efectivo',
-      abono: nuevoAbono
-    };
-
-    await examenPaciente.update(updateData);
-
-    const examenActualizado = await ExamenPaciente.findByPk(examenPacienteId);
-    
-    res.json({ 
-      success: true,
-      message: 'Estado de pago actualizado correctamente',
-      examen: examenActualizado
-    });
-    
-  } catch (error) {
-    console.error('❌ ERROR CRÍTICO al actualizar estado de pago:', error);
-    res.status(500).json({ 
-      success: false,
-      mensaje: 'Error al actualizar estado de pago',
-      error: error.message 
-    });
-  }
+// =========================
+// ✅ HELPERS NUMÉRICOS
+// =========================
+const toNum = (v) => {
+  const n = Number(String(v ?? 0).replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
 };
 
-// REGISTRAR ABONO
-const registrarAbono = async (req, res) => {
-  const { id } = req.params;
-  const { monto } = req.body;
+const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
 
-  try {
-    const item = await ExamenPaciente.findByPk(id);
-    if (!item) return res.status(404).json({ message: 'No encontrado' });
+// =========================
+// ✅ HELPERS DE FECHA (GRUPOS)
+// =========================
+// fecha viene como 'YYYY-MM-DD'
+const TZ = 'America/Guayaquil';
 
-    const abonoActual = parseFloat(item.abono || 0);
-    const nuevoAbono = abonoActual + parseFloat(monto || 0);
-    item.abono = nuevoAbono;
+const whereByDate = (fecha) => ([
+  sequelize.where(
+    sequelize.fn('DATE', sequelize.literal(`"fechaAsignacion" AT TIME ZONE '${TZ}'`)),
+    fecha
+  )
+]);
 
-    const precio = parseFloat(item.precio || 0);
-    if (nuevoAbono + 1e-6 >= precio) {
-      item.estadoPago = 'pagado';
-    }
+// =========================
+// ✅ FUNCIÓN AUXILIAR: CALCULAR SALDOS
+// =========================
+const calcularSaldos = (total, abono) => {
+  const totalNum = round2(toNum(total));
+  const abonoNum = round2(toNum(abono));
+  const pendiente = round2(Math.max(0, totalNum - abonoNum));
 
-    await item.save();
-    res.json({ message: '💸 Abono registrado', examen: item });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ message: 'Error al registrar abono' });
-  }
+  let estadoPago = 'pendiente';
+  if (pendiente <= 0.01) estadoPago = 'pagado';
+  else if (abonoNum > 0) estadoPago = 'abono';
+
+  return { total: totalNum, abono: abonoNum, pendiente, estadoPago };
 };
 
-// PROCESAR PAGOS MÚLTIPLES
+// =========================
+// ✅ (OPCIONAL RECOMENDADO) Recalcular saldoPendiente/estadoPago de una cabecera
+// =========================
+const recalcularCabecera = async (examenPacienteId) => {
+  const cab = await ExamenPaciente.findByPk(examenPacienteId);
+  if (!cab) return null;
+
+  const total = round2(toNum(cab.total));
+  const abono = round2(toNum(cab.abono));
+  const saldos = calcularSaldos(total, abono);
+
+  await cab.update({
+    saldoPendiente: saldos.pendiente,
+    estadoPago: saldos.estadoPago,
+  });
+
+  return saldos;
+};
+
+// =======================================================
+// ✅ PROCESAR PAGOS MÚLTIPLES (varias cabeceras)
+// Body: { examenes: [{examenPacienteId, monto}], metodoPago }
+// =======================================================
 const procesarPagosMultiples = async (req, res) => {
-  const { examenes, montoTotal, metodoPago } = req.body;
+  const { examenes, metodoPago } = req.body;
 
   try {
-    console.log('💰 Procesando pagos múltiples:', { examenes, montoTotal, metodoPago });
+    if (!Array.isArray(examenes) || examenes.length === 0) {
+      return res.status(400).json({ success: false, mensaje: 'Lista de exámenes inválida' });
+    }
 
     const resultados = [];
-    
+
     for (const examenData of examenes) {
       const { examenPacienteId, monto } = examenData;
-      
-      const examenPaciente = await ExamenPaciente.findByPk(examenPacienteId);
-      if (!examenPaciente) {
+
+      const cab = await ExamenPaciente.findByPk(examenPacienteId);
+      if (!cab) {
         resultados.push({ examenPacienteId, success: false, error: 'Examen no encontrado' });
         continue;
       }
 
-      const precioTotal = parseFloat(examenPaciente.precio) || 0;
-      const abonoActual = parseFloat(examenPaciente.abono) || 0;
-      const nuevoAbono = abonoActual + parseFloat(monto);
-      
-      let estadoPagoFinal;
-      if (nuevoAbono >= precioTotal) {
-        estadoPagoFinal = 'pagado';
-      } else if (nuevoAbono > 0) {
-        estadoPagoFinal = 'abono';
-      } else {
-        estadoPagoFinal = 'pendiente';
+      const total = round2(toNum(cab.total));
+      const abonoActual = round2(toNum(cab.abono));
+      const montoNum = round2(toNum(monto));
+
+      if (montoNum <= 0) {
+        resultados.push({ examenPacienteId, success: false, error: 'Monto inválido' });
+        continue;
       }
 
-      await examenPaciente.update({
-        estadoPago: estadoPagoFinal,
-        metodoPago: metodoPago,
-        abono: nuevoAbono
+      const saldoPendienteActual = round2(Math.max(0, total - abonoActual));
+      if (montoNum > saldoPendienteActual + 0.01) {
+        resultados.push({
+          examenPacienteId,
+          success: false,
+          error: `El monto excede saldo pendiente ($${saldoPendienteActual.toFixed(2)})`
+        });
+        continue;
+      }
+
+      const nuevoAbono = round2(abonoActual + montoNum);
+      const saldos = calcularSaldos(total, nuevoAbono);
+
+      await cab.update({
+        abono: saldos.abono,
+        saldoPendiente: saldos.pendiente,
+        estadoPago: saldos.estadoPago,
+        metodoPago: metodoPago || 'efectivo'
       });
 
-      resultados.push({ 
-        examenPacienteId, 
-        success: true, 
-        nuevoEstado: estadoPagoFinal,
-        nuevoAbono 
+      resultados.push({
+        examenPacienteId,
+        success: true,
+        nuevoEstado: saldos.estadoPago,
+        total,
+        abonoAnterior: abonoActual,
+        abonoNuevo: saldos.abono,
+        pendiente: saldos.pendiente
       });
     }
 
-    res.json({
+    return res.json({
+      success: true,
       message: 'Pagos procesados correctamente',
       resultados,
       totalProcesado: resultados.filter(r => r.success).length
@@ -148,38 +134,30 @@ const procesarPagosMultiples = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error al procesar pagos múltiples:', error);
-    res.status(500).json({ mensaje: 'Error al procesar pagos múltiples', error: error.message });
+    return res.status(500).json({ success: false, mensaje: 'Error al procesar pagos múltiples', error: error.message });
   }
 };
 
-
-
-// OBTENER DETALLE GRUPO PAGO
+// =======================================================
+// ✅ OBTENER DETALLE GRUPO PAGO (cabeceras + detalles)
+// GET /paciente/:pacienteId/grupo-pago/:fecha   fecha=YYYY-MM-DD
+// =======================================================
 const obtenerDetalleGrupoPago = async (req, res) => {
   try {
     const { pacienteId, fecha } = req.params;
-    
-    console.log('📋 OBTENIENDO DETALLE GRUPO PAGO:', { pacienteId, fecha });
 
     if (!fecha || fecha.length !== 10) {
-      return res.status(400).json({
-        success: false,
-        mensaje: 'Formato de fecha inválido. Use YYYY-MM-DD'
-      });
+      return res.status(400).json({ success: false, mensaje: 'Formato de fecha inválido. Use YYYY-MM-DD' });
     }
 
     const cabeceras = await ExamenPaciente.findAll({
-      where: { 
+      where: {
         pacienteId,
-        fechaAsignacion: {
-          [Op.between]: [
-            new Date(fecha + 'T00:00:00.000Z'),
-            new Date(fecha + 'T23:59:59.999Z')
-          ]
-        }
+        [Op.and]: whereByDate(fecha)
       },
       include: [
         {
+          // detalles
           model: ExamenPacienteDetalle,
           as: 'Detalles',
           include: [
@@ -190,59 +168,480 @@ const obtenerDetalleGrupoPago = async (req, res) => {
             }
           ]
         }
-      ]
+      ],
+      order: [['fechaAsignacion', 'ASC']]
     });
 
     if (!cabeceras || cabeceras.length === 0) {
-      return res.status(404).json({
-        success: false,
-        mensaje: 'No se encontraron exámenes para la fecha especificada'
-      });
+      return res.status(404).json({ success: false, mensaje: 'No se encontraron exámenes para la fecha especificada' });
     }
 
-    res.json({
+    return res.json({
       success: true,
       grupo: {
         fecha,
         pacienteId,
-        cabeceras: cabeceras.map(cab => ({
-          id: cab.id,
-          fecha: cab.fechaAsignacion,
-          precioTotal: cab.precioTotal,
-          abono: cab.abono,
-          saldoPendiente: (cab.precioTotal || 0) - (cab.abono || 0),
-          estadoPago: cab.estadoPago,
-          detalles: cab.Detalles ? cab.Detalles.map(det => ({
-            id: det.id,
-            examenNombre: det.Examen?.nombre,
-            areaNombre: det.Examen?.Area?.nombre,
-            precio: det.precioAplicado,
-            tipo: det.Examen ? 'examen' : 'subexamen'
-          })) : []
-        }))
+        cabeceras: cabeceras.map(cab => {
+          const total = round2(toNum(cab.total));
+          const abono = round2(toNum(cab.abono));
+          const pendiente = round2(Math.max(0, total - abono));
+          return {
+            id: cab.id,
+            fecha: cab.fechaAsignacion,
+            total,
+            abono,
+            saldoPendiente: pendiente,
+            estadoPago: cab.estadoPago,
+            detalles: (cab.Detalles || []).map(det => ({
+              id: det.id,
+              examenNombre: det.Examen?.nombre ?? det.nombreExamen ?? 'Sin nombre',
+              areaNombre: det.Examen?.Area?.nombre ?? null,
+              precio: round2(toNum(det.precioFinal ?? det.precioAplicado)),
+              tipo: det.examenId ? 'examen' : 'subexamen'
+            }))
+          };
+        })
       }
     });
 
   } catch (error) {
     console.error('❌ Error en obtenerDetalleGrupoPago:', error);
-    res.status(500).json({
-      success: false,
-      mensaje: 'Error interno del servidor',
-      error: error.message
-    });
+    return res.status(500).json({ success: false, mensaje: 'Error interno del servidor', error: error.message });
   }
 };
 
-// DIAGNÓSTICO FECHAS PAGO
+// =======================================================
+// ✅ ACTUALIZAR ESTADO DE PAGO INDIVIDUAL (SET)
+// PUT /examen/:examenPacienteId/pago  Body: { abono, metodoPago }
+// OJO: aquí "abono" es el abono TOTAL final, no incremental.
+// =======================================================
+const actualizarEstadoPago = async (req, res) => {
+  try {
+    const { examenPacienteId } = req.params;
+    const { metodoPago, abono } = req.body;
+
+    const cab = await ExamenPaciente.findByPk(examenPacienteId);
+    if (!cab) return res.status(404).json({ success: false, error: 'Examen no encontrado' });
+
+    const total = round2(toNum(cab.total));
+    const abonoTotal = round2(toNum(abono));
+
+    if (abonoTotal < 0) {
+      return res.status(400).json({ success: false, mensaje: 'El abono no puede ser negativo' });
+    }
+    if (abonoTotal > total + 0.01) {
+      return res.status(400).json({ success: false, mensaje: 'El abono excede el total', total });
+    }
+
+    const saldos = calcularSaldos(total, abonoTotal);
+
+    await cab.update({
+      abono: saldos.abono,
+      saldoPendiente: saldos.pendiente,
+      estadoPago: saldos.estadoPago,
+      metodoPago: metodoPago || 'efectivo'
+    });
+
+    const actualizado = await ExamenPaciente.findByPk(examenPacienteId);
+
+    return res.json({
+      success: true,
+      message: 'Estado de pago actualizado correctamente',
+      examen: actualizado,
+      saldos
+    });
+
+  } catch (error) {
+    console.error('❌ ERROR al actualizar estado de pago:', error);
+    return res.status(500).json({ success: false, mensaje: 'Error al actualizar estado de pago', error: error.message });
+  }
+};
+
+// =======================================================
+// ✅ REGISTRAR ABONO INDIVIDUAL (INCREMENTAL)
+// POST /examen/:id/abono   Body: { monto }
+// =======================================================
+const registrarAbono = async (req, res) => {
+  const { id } = req.params;
+  const { monto } = req.body;
+
+  try {
+    const cab = await ExamenPaciente.findByPk(id);
+    if (!cab) return res.status(404).json({ success: false, message: 'Examen no encontrado' });
+
+    const total = round2(toNum(cab.total));
+    const abonoActual = round2(toNum(cab.abono));
+    const montoNum = round2(toNum(monto));
+
+    if (montoNum <= 0) {
+      return res.status(400).json({ success: false, message: 'El monto debe ser mayor a 0' });
+    }
+
+    const saldoPendienteActual = round2(Math.max(0, total - abonoActual));
+    if (montoNum > saldoPendienteActual + 0.01) {
+      return res.status(400).json({
+        success: false,
+        message: `El monto ($${montoNum.toFixed(2)}) excede el saldo pendiente ($${saldoPendienteActual.toFixed(2)})`,
+        saldoPendiente: saldoPendienteActual
+      });
+    }
+
+    const nuevoAbono = round2(abonoActual + montoNum);
+    const saldos = calcularSaldos(total, nuevoAbono);
+
+    await cab.update({
+      abono: saldos.abono,
+      saldoPendiente: saldos.pendiente,
+      estadoPago: saldos.estadoPago
+    });
+
+    // (opcional) registrar Pago individual si quieres llevar historial
+    // await Pago.create({ pacienteId: cab.pacienteId, examenPacienteId: cab.id, monto: montoNum, metodoPago: 'efectivo', tipo: 'individual' })
+
+    return res.json({
+      success: true,
+      message: 'Abono registrado exitosamente',
+      examen: cab,
+      saldos
+    });
+
+  } catch (error) {
+    console.error('❌ Error al registrar abono:', error);
+    return res.status(500).json({ success: false, message: 'Error al registrar abono', error: error.message });
+  }
+};
+
+// =======================================================
+// ✅ OBTENER RESUMEN GRUPAL POR FECHA
+// GET /paciente/:pacienteId/resumen-grupal/:fecha
+// =======================================================
+const obtenerResumenGrupalPorFecha = async (req, res) => {
+  try {
+    const { pacienteId, fecha } = req.params;
+
+    const cabeceras = await ExamenPaciente.findAll({
+      where: {
+        pacienteId,
+        [Op.and]: whereByDate(fecha)
+      },
+      order: [['fechaAsignacion', 'ASC']]
+    });
+
+    if (!cabeceras || cabeceras.length === 0) {
+      return res.json({
+        success: true,
+        grupo: {
+          total: 0,
+          abono: 0,
+          pendiente: 0,
+          estadoPago: 'pendiente',
+          cantidadExamenes: 0,
+          fecha,
+          examenes: []
+        }
+      });
+    }
+
+    let totalGrupo = 0;
+    let abonoGrupo = 0;
+
+    for (const cab of cabeceras) {
+      // aseguras consistencia en BD
+      await recalcularCabecera(cab.id);
+
+      totalGrupo += round2(toNum(cab.total));
+      abonoGrupo += round2(toNum(cab.abono));
+    }
+
+    totalGrupo = round2(totalGrupo);
+    abonoGrupo = round2(abonoGrupo);
+
+    const pendienteGrupo = round2(Math.max(0, totalGrupo - abonoGrupo));
+    const estadoGrupo = calcularSaldos(totalGrupo, abonoGrupo).estadoPago;
+
+    const examenesDetalle = cabeceras.map(cab => {
+      const total = round2(toNum(cab.total));
+      const abono = round2(toNum(cab.abono));
+      const pendiente = round2(Math.max(0, total - abono));
+      return {
+        id: cab.id,
+        fechaAsignacion: cab.fechaAsignacion,
+        total,
+        abono,
+        pendiente,
+        estadoPago: cab.estadoPago
+      };
+    });
+
+    return res.json({
+      success: true,
+      grupo: {
+        total: totalGrupo,
+        abono: abonoGrupo,
+        pendiente: pendienteGrupo,
+        estadoPago: estadoGrupo,
+        cantidadExamenes: cabeceras.length,
+        fecha,
+        examenes: examenesDetalle,
+        resumen: `$${abonoGrupo.toFixed(2)} / $${totalGrupo.toFixed(2)}`
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error en obtenerResumenGrupalPorFecha:', error);
+    return res.status(500).json({ success: false, mensaje: 'Error al obtener resumen grupal', error: error.message });
+  }
+};
+
+// =======================================================
+// ✅ PROCESAR PAGO GRUPAL (por fecha)
+// POST /procesar-pago-grupal
+// Body: { pacienteId, fechaGrupo, montoTotal, metodoPago, laboratoristaId }
+// Distribución: "por orden" (primero completa cabecera A, luego B...)
+// =======================================================
+const procesarPagoGrupal = async (req, res) => {
+  try {
+    const { pacienteId, fechaGrupo, montoTotal, metodoPago, laboratoristaId } = req.body;
+
+    if (!pacienteId || !fechaGrupo) {
+      return res.status(400).json({ success: false, mensaje: 'pacienteId y fechaGrupo son obligatorios' });
+    }
+
+    let montoPagado = round2(toNum(montoTotal));
+    if (montoPagado <= 0) {
+      return res.status(400).json({ success: false, mensaje: 'El monto debe ser mayor a 0' });
+    }
+
+    const cabeceras = await ExamenPaciente.findAll({
+      where: {
+        pacienteId,
+        [Op.and]: whereByDate(fechaGrupo)
+      },
+      order: [['fechaAsignacion', 'ASC']]
+    });
+
+    if (!cabeceras || cabeceras.length === 0) {
+      return res.status(404).json({ success: false, mensaje: `No se encontraron exámenes para la fecha ${fechaGrupo}` });
+    }
+
+    // recalcular cabeceras (por si hubo nuevos detalles/exámenes)
+    for (const cab of cabeceras) await recalcularCabecera(cab.id);
+
+    // saldo pendiente real del grupo
+    let totalGrupo = 0;
+    let abonoGrupo = 0;
+
+    for (const cab of cabeceras) {
+      totalGrupo += round2(toNum(cab.total));
+      abonoGrupo += round2(toNum(cab.abono));
+    }
+
+    totalGrupo = round2(totalGrupo);
+    abonoGrupo = round2(abonoGrupo);
+
+    const saldoPendienteGrupo = round2(Math.max(0, totalGrupo - abonoGrupo));
+
+    if (montoPagado > saldoPendienteGrupo + 0.01) {
+      return res.status(400).json({
+        success: false,
+        mensaje: `El monto pagado ($${montoPagado.toFixed(2)}) excede el saldo pendiente ($${saldoPendienteGrupo.toFixed(2)})`,
+        saldoPendiente: saldoPendienteGrupo,
+        puedePagarMaximo: saldoPendienteGrupo
+      });
+    }
+
+    // distribuir pago por orden
+    const examenesActualizados = [];
+    let montoRestante = montoPagado;
+
+    for (const cab of cabeceras) {
+      if (montoRestante <= 0) break;
+
+      const total = round2(toNum(cab.total));
+      const abonoActual = round2(toNum(cab.abono));
+      const pendiente = round2(Math.max(0, total - abonoActual));
+
+      if (pendiente <= 0.01) continue;
+
+      const aplicar = round2(Math.min(pendiente, montoRestante));
+      const nuevoAbono = round2(abonoActual + aplicar);
+      const saldos = calcularSaldos(total, nuevoAbono);
+
+      await cab.update({
+        abono: saldos.abono,
+        saldoPendiente: saldos.pendiente,
+        estadoPago: saldos.estadoPago,
+        metodoPago: metodoPago || 'efectivo'
+      });
+
+      examenesActualizados.push({
+        id: cab.id,
+        total,
+        abonoAnterior: abonoActual,
+        abonoNuevo: saldos.abono,
+        pendiente: saldos.pendiente,
+        estadoPago: saldos.estadoPago,
+        montoAsignado: aplicar
+      });
+
+      montoRestante = round2(montoRestante - aplicar);
+    }
+
+    // registrar pago (historial)
+    const pago = await Pago.create({
+      pacienteId,
+      laboratoristaId: laboratoristaId || null,
+      monto: montoPagado,
+      metodoPago: metodoPago || 'efectivo',
+      tipo: 'grupal',
+      estado: 'completado',
+      fechaPago: new Date(),
+      referencia: `Pago grupal ${fechaGrupo} - ${cabeceras.length} cabeceras`
+    });
+
+    // recalcular totales verificados
+    const cabecerasVer = await ExamenPaciente.findAll({
+      where: { pacienteId, [Op.and]: whereByDate(fechaGrupo) }
+    });
+
+    let totalVer = 0;
+    let abonoVer = 0;
+    for (const cab of cabecerasVer) {
+      totalVer += round2(toNum(cab.total));
+      abonoVer += round2(toNum(cab.abono));
+    }
+    totalVer = round2(totalVer);
+    abonoVer = round2(abonoVer);
+
+    const pendienteVer = round2(Math.max(0, totalVer - abonoVer));
+    const estadoFinal = calcularSaldos(totalVer, abonoVer).estadoPago;
+
+    return res.json({
+      success: true,
+      mensaje: `Pago de $${montoPagado.toFixed(2)} registrado exitosamente`,
+      pago: {
+        id: pago.id,
+        monto: toNum(pago.monto),
+        metodoPago: pago.metodoPago,
+        fechaPago: pago.fechaPago
+      },
+      grupo: {
+        fecha: fechaGrupo,
+        estadoPago: estadoFinal,
+        financiero: {
+          total: totalVer,
+          abonado: abonoVer,
+          pendiente: pendienteVer
+        },
+        cabeceras: cabecerasVer.length
+      },
+      cabecerasActualizadas: examenesActualizados,
+      resumen: {
+        antes: { total: totalGrupo, abono: abonoGrupo, pendiente: saldoPendienteGrupo },
+        despues: { total: totalVer, abono: abonoVer, pendiente: pendienteVer }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ ERROR en procesarPagoGrupal:', error);
+    return res.status(500).json({ success: false, mensaje: 'Error interno al procesar pago grupal', error: error.message });
+  }
+};
+
+// =======================================================
+// ✅ OBTENER DATOS ACTUALIZADOS (grupo por fecha)
+// GET /pacientes/:pacienteId/fecha/:fecha/datos-actualizados
+// =======================================================
+const obtenerDatosActualizados = async (req, res) => {
+  try {
+    const { pacienteId, fecha } = req.params;
+
+    const cabeceras = await ExamenPaciente.findAll({
+      where: {
+        pacienteId,
+        [Op.and]: whereByDate(fecha)
+      },
+      order: [['fechaAsignacion', 'ASC']]
+    });
+
+    // recalcular cada cabecera por consistencia
+    for (const cab of cabeceras) await recalcularCabecera(cab.id);
+
+    let total = 0;
+    let abono = 0;
+
+    for (const cab of cabeceras) {
+      total += round2(toNum(cab.total));
+      abono += round2(toNum(cab.abono));
+    }
+
+    total = round2(total);
+    abono = round2(abono);
+
+    const pendiente = round2(Math.max(0, total - abono));
+    const estadoPago = calcularSaldos(total, abono).estadoPago;
+
+    return res.json({
+      success: true,
+      datos: {
+        total,
+        abono,
+        pendiente,
+        estadoPago,
+        cantidadExamenes: cabeceras.length,
+        examenes: cabeceras.map(cab => {
+          const t = round2(toNum(cab.total));
+          const a = round2(toNum(cab.abono));
+          return {
+            id: cab.id,
+            total: t,
+            abono: a,
+            saldoPendiente: round2(Math.max(0, t - a)),
+            estadoPago: cab.estadoPago,
+            fecha: cab.fechaAsignacion
+          };
+        }),
+        fechaConsulta: fecha
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error en obtenerDatosActualizados:', error);
+    return res.status(500).json({ success: false, mensaje: 'Error obteniendo datos actualizados', error: error.message });
+  }
+};
+
+// =======================================================
+// ✅ DIAGNÓSTICOS (opcionales)
+// (Los dejo, pero corregidos a "total" en vez de "precioTotal")
+// =======================================================
+const buscarCabecerasPorFecha = async (pacienteId, fecha) => {
+  const fechaInicio = new Date(fecha + 'T00:00:00.000Z');
+  const fechaFin = new Date(fecha + 'T23:59:59.999Z');
+
+  return ExamenPaciente.findAll({
+    where: {
+      pacienteId,
+      fechaAsignacion: { [Op.between]: [fechaInicio, fechaFin] }
+    },
+    include: [
+      {
+        model: ExamenPacienteDetalle,
+        as: 'Detalles',
+        include: [{ model: Examen, as: 'Examen', attributes: ['id', 'nombre'] }]
+      }
+    ],
+    order: [['fechaAsignacion', 'DESC']]
+  });
+};
+
 const diagnosticarFechasPago = async (req, res) => {
   try {
     const { pacienteId, fecha } = req.params;
-    
-    console.log('🔍 DIAGNÓSTICO FECHAS PAGO:', { pacienteId, fecha });
 
     const todasCabeceras = await ExamenPaciente.findAll({
       where: { pacienteId },
-      attributes: ['id', 'fechaAsignacion', 'precioTotal', 'abono', 'estadoPago'],
+      attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago'],
       order: [['fechaAsignacion', 'DESC']]
     });
 
@@ -256,861 +655,296 @@ const diagnosticarFechasPago = async (req, res) => {
           ]
         }
       },
-      attributes: ['id', 'fechaAsignacion', 'precioTotal', 'abono', 'estadoPago']
+      attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago']
     });
 
-    res.json({
+    return res.json({
       success: true,
       diagnostico: {
         fechaSolicitada: fecha,
         totalCabecerasPaciente: todasCabeceras.length,
         cabecerasEnFecha: cabeceras.length,
-        todasCabeceras: todasCabeceras.map(cab => ({
-          id: cab.id,
-          fechaAsignacion: cab.fechaAsignacion,
-          fechaLocal: new Date(cab.fechaAsignacion).toLocaleDateString('es-EC'),
-          precioTotal: cab.precioTotal,
-          abono: cab.abono,
-          estadoPago: cab.estadoPago
-        })),
-        cabecerasEncontradas: cabeceras.map(cab => ({
-          id: cab.id,
-          fechaAsignacion: cab.fechaAsignacion,
-          precioTotal: cab.precioTotal,
-          abono: cab.abono,
-          estadoPago: cab.estadoPago
-        }))
+        todasCabeceras,
+        cabecerasEncontradas: cabeceras
       }
     });
 
   } catch (error) {
     console.error('❌ Error en diagnóstico fechas:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// DIAGNÓSTICO COMPLETO PAGO
 const diagnosticoCompletoPago = async (req, res) => {
   try {
     const { pacienteId, fecha } = req.params;
-    
-    console.log('🩺 DIAGNÓSTICO COMPLETO PAGO:', { pacienteId, fecha });
 
     const paciente = await Paciente.findByPk(pacienteId);
     if (!paciente) {
-      return res.status(404).json({
-        success: false,
-        mensaje: 'Paciente no encontrado'
-      });
+      return res.status(404).json({ success: false, mensaje: 'Paciente no encontrado' });
     }
 
     const todasCabeceras = await ExamenPaciente.findAll({
       where: { pacienteId },
-      include: [{
-        model: ExamenPacienteDetalle,
-        as: 'Detalles'
-      }],
+      include: [{ model: ExamenPacienteDetalle, as: 'Detalles' }],
       order: [['fechaAsignacion', 'DESC']]
     });
 
     const cabecerasEnFecha = await buscarCabecerasPorFecha(pacienteId, fecha);
 
-    res.json({
+    return res.json({
       success: true,
       diagnostico: {
-        paciente: {
-          id: paciente.id,
-          nombre: `${paciente.nombres} ${paciente.apellidos}`
-        },
+        paciente: { id: paciente.id, nombre: `${paciente.nombres} ${paciente.apellidos}` },
         fechaSolicitada: fecha,
         totalCabeceras: todasCabeceras.length,
-        cabecerasEnFecha: cabecerasEnFecha.length,
-        todasCabeceras: todasCabeceras.map(cab => ({
-          id: cab.id,
-          fechaAsignacion: cab.fechaAsignacion,
-          fechaLocal: new Date(cab.fechaAsignacion).toLocaleDateString('es-EC'),
-          fechaUTC: cab.fechaAsignacion,
-          precioTotal: cab.precioTotal,
-          abono: cab.abono,
-          estadoPago: cab.estadoPago,
-          laboratoristaId: cab.laboratoristaId,
-          detalles: cab.Detalles?.length || 0
-        })),
-        cabecerasEncontradas: cabecerasEnFecha.map(cab => ({
-          id: cab.id,
-          fechaAsignacion: cab.fechaAsignacion,
-          precioTotal: cab.precioTotal,
-          abono: cab.abono,
-          estadoPago: cab.estadoPago
-        }))
+        cabecerasEnFecha: cabecerasEnFecha.length
       }
     });
 
   } catch (error) {
     console.error('❌ Error en diagnóstico completo:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
 
-
-// ✅ MÉTODO AUXILIAR para obtener fechas disponibles
-const obtenerFechasDisponibles = async (pacienteId) => {
-  try {
-    const examenes = await ExamenPaciente.findAll({
-      where: { pacienteId },
-      attributes: ['fechaAsignacion'],
-      group: ['fechaAsignacion'],
-      raw: true
-    });
-    
-    return examenes.map(e => e.fechaAsignacion.toISOString().split('T')[0]);
-  } catch (error) {
-    return [];
-  }
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/////////////////////////////////////////////////////
-
-// ✅ FUNCIÓN AUXILIAR PARA OBTENER PRECIO - COLOCAR AL INICIO DEL ARCHIVO
-const obtenerPrecioExamen = (examen) => {
-  console.log(`🔍 Calculando precio para examenPaciente ID: ${examen.id}`);
-  
-  // 1. Intentar obtener precio de ExamenPaciente directamente
-  let precio = parseFloat(examen.precioFinal) || parseFloat(examen.precio) || parseFloat(examen.total) || 0;
-  
-  // 2. Si no tiene precio, buscar en los detalles
-  if (precio === 0 && examen.Detalles && examen.Detalles.length > 0) {
-    console.log(`📋 Buscando precio en ${examen.Detalles.length} detalles...`);
-    
-    for (const detalle of examen.Detalles) {
-      // Buscar precio en el detalle
-      const precioDetalle = parseFloat(detalle.precioFinal) || parseFloat(detalle.precioAplicado) || 0;
-      
-      if (precioDetalle > 0) {
-        precio = precioDetalle;
-        console.log(`💰 Precio encontrado en detalle: ${precio}`);
-        break;
-      }
-      
-      // Buscar precio en el examen relacionado
-      if (detalle.Examen) {
-        const precioExamen = parseFloat(detalle.Examen.precio) || 0;
-        if (precioExamen > 0) {
-          precio = precioExamen;
-          console.log(`💰 Precio encontrado en examen relacionado: ${precio}`);
-          break;
-        }
-      }
-      
-      // Buscar precio en subexamen relacionado
-      if (detalle.Subexamen) {
-        const precioSubexamen = parseFloat(detalle.Subexamen.precio) || 0;
-        if (precioSubexamen > 0) {
-          precio = precioSubexamen;
-          console.log(`💰 Precio encontrado en subexamen relacionado: ${precio}`);
-          break;
-        }
-      }
-    }
-  }
-  
-  // 3. Si aún no hay precio, usar valor por defecto basado en detalles
-  if (precio === 0 && examen.Detalles && examen.Detalles.length > 0) {
-    precio = examen.Detalles.length * 10; // Precio por defecto
-    console.log(`⚠️ Usando precio por defecto: ${precio}`);
-  }
-  
-  console.log(`💰 Examen ${examen.id} - Precio final calculado: ${precio}`);
-  return precio;
-};
-
-
-// ✅ FUNCIÓN AUXILIAR PARA BUSCAR CABECERAS (SI LA NECESITAS)
-const buscarCabecerasPorFecha = async (pacienteId, fecha) => {
-  try {
-    console.log('🔍 BÚSQUEDA MEJORADA POR FECHA:', { pacienteId, fecha });
-    
-    const fechaInicio = new Date(fecha + 'T00:00:00.000Z');
-    const fechaFin = new Date(fecha + 'T23:59:59.999Z');
-
-    const cabeceras = await db.ExamenPaciente.findAll({
-      where: {
-        pacienteId: pacienteId,
-        fechaAsignacion: {
-          [Op.between]: [fechaInicio, fechaFin]
-        }
-      },
-      include: [
-        {
-          model: db.ExamenPacienteDetalle,
-          as: 'Detalles',
-          include: [
-            {
-              model: db.Examen,
-              as: 'Examen',
-              attributes: ['id', 'nombre', 'precio']
-            }
-          ]
-        }
-      ],
-      order: [['fechaAsignacion', 'DESC']]
-    });
-
-    console.log(`✅ BÚSQUEDA COMPLETADA: ${cabeceras.length} cabeceras encontradas`);
-    return cabeceras;
-    
-  } catch (error) {
-    console.error('❌ Error en buscarCabecerasPorFecha:', error);
-    throw error;
-  }
-};
-
-
-// ✅ FUNCIÓN DE DIAGNÓSTICO DE FECHAS (temporal)
+// =======================================================
+// 🩺 DIAGNÓSTICO FECHAS PAGO GRUPAL (POST)
+// Body: { pacienteId, fecha }
+// =======================================================
 const diagnosticarFechasPagoGrupal = async (req, res) => {
   try {
     const { pacienteId, fecha } = req.body;
-    
-    console.log('🔍 DIAGNÓSTICO FECHAS PAGO GRUPAL:', { pacienteId, fecha });
 
-    // Buscar TODOS los exámenes del paciente
-    const todosExamenes = await db.ExamenPaciente.findAll({
+    if (!pacienteId || !fecha) {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'pacienteId y fecha son obligatorios'
+      });
+    }
+
+    const todos = await ExamenPaciente.findAll({
       where: { pacienteId },
       attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago'],
       order: [['fechaAsignacion', 'DESC']]
     });
 
-    // Buscar con diferentes formatos de fecha
-    const fechaUTCInicio = new Date(fecha + 'T00:00:00.000Z');
-    const fechaUTCFin = new Date(fecha + 'T23:59:59.999Z');
-    
-    const fechaLocalInicio = new Date(fecha + 'T00:00:00.000-05:00');
-    const fechaLocalFin = new Date(fecha + 'T23:59:59.999-05:00');
-
-    const examenesUTC = await db.ExamenPaciente.findAll({
+    const porDATE = await ExamenPaciente.findAll({
       where: {
         pacienteId,
-        fechaAsignacion: { [Op.between]: [fechaUTCInicio, fechaUTCFin] }
-      }
+        [Op.and]: [
+          sequelize.where(sequelize.fn('DATE', sequelize.col('fechaAsignacion')), fecha)
+        ]
+      },
+      attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago'],
+      order: [['fechaAsignacion', 'ASC']]
     });
 
-    const examenesLocal = await db.ExamenPaciente.findAll({
-      where: {
-        pacienteId,
-        fechaAsignacion: { [Op.between]: [fechaLocalInicio, fechaLocalFin] }
-      }
-    });
-
-    res.json({
+    return res.json({
       success: true,
       diagnostico: {
+        pacienteId,
         fechaSolicitada: fecha,
-        totalExamenesPaciente: todosExamenes.length,
-        examenesEncontradosUTC: examenesUTC.length,
-        examenesEncontradosLocal: examenesLocal.length,
-        todosExamenes: todosExamenes.map(ex => ({
-          id: ex.id,
-          fechaAsignacion: ex.fechaAsignacion,
-          fechaISO: ex.fechaAsignacion.toISOString(),
-          fechaLocal: ex.fechaAsignacion.toString(),
-          total: ex.total,
-          abono: ex.abono,
-          estadoPago: ex.estadoPago
-        })),
-        rangosBusqueda: {
-          UTC: {
-            inicio: fechaUTCInicio.toISOString(),
-            fin: fechaUTCFin.toISOString()
-          },
-          Local: {
-            inicio: fechaLocalInicio.toISOString(),
-            fin: fechaLocalFin.toISOString()
-          }
-        }
+        totalCabecerasPaciente: todos.length,
+        cabecerasEnFecha_porDATE: porDATE.length,
+        cabecerasEnFecha: porDATE
       }
     });
 
   } catch (error) {
-    console.error('❌ Error en diagnóstico:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Error en diagnosticarFechasPagoGrupal:', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-
-
-
-
-// ✅ DIAGNÓSTICO COMPLETO DEL PROBLEMA DE FECHAS
+// =======================================================
+// 🩺 DIAGNÓSTICO COMPLETO FECHAS (GET)
+// =======================================================
 const diagnosticoCompletoFechas = async (req, res) => {
   try {
     const { pacienteId } = req.params;
-    
-    console.log('🔍 DIAGNÓSTICO COMPLETO DE FECHAS PARA PACIENTE:', pacienteId);
 
-    // 1. Obtener TODOS los exámenes del paciente
-    const todosExamenes = await db.ExamenPaciente.findAll({
+    const cabeceras = await ExamenPaciente.findAll({
       where: { pacienteId },
       attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago', 'createdAt', 'updatedAt'],
-      order: [['fechaAsignacion', 'DESC']],
-      raw: true
-    });
-
-    // 2. Analizar diferencias entre fechas
-    const analisisFechas = todosExamenes.map(examen => {
-      const fechaAsignacion = new Date(examen.fechaAsignacion);
-      const createdAt = new Date(examen.createdAt);
-      
-      return {
-        id: examen.id,
-        fechaAsignacion: {
-          original: examen.fechaAsignacion,
-          iso: fechaAsignacion.toISOString(),
-          local: fechaAsignacion.toLocaleString('es-EC'),
-          dateOnly: fechaAsignacion.toLocaleDateString('es-EC'),
-          time: fechaAsignacion.toLocaleTimeString('es-EC')
-        },
-        createdAt: {
-          original: examen.createdAt,
-          iso: createdAt.toISOString(),
-          local: createdAt.toLocaleString('es-EC'),
-          dateOnly: createdAt.toLocaleDateString('es-EC')
-        },
-        diferenciaHoras: (createdAt - fechaAsignacion) / (1000 * 60 * 60),
-        total: examen.total,
-        estadoPago: examen.estadoPago
-      };
-    });
-
-    // 3. Agrupar por fecha local
-    const agrupacionPorFecha = {};
-    analisisFechas.forEach(examen => {
-      const fechaKey = examen.fechaAsignacion.dateOnly;
-      
-      if (!agrupacionPorFecha[fechaKey]) {
-        agrupacionPorFecha[fechaKey] = [];
-      }
-      
-      agrupacionPorFecha[fechaKey].push(examen);
-    });
-
-    // 4. Buscar inconsistencias
-    const inconsistencias = analisisFechas.filter(examen => 
-      Math.abs(examen.diferenciaHoras) > 24 || // Más de 1 día de diferencia
-      examen.fechaAsignacion.dateOnly !== examen.createdAt.dateOnly
-    );
-
-    res.json({
-      success: true,
-      diagnostico: {
-        pacienteId,
-        totalExamenes: todosExamenes.length,
-        fechasUnicas: Object.keys(agrupacionPorFecha),
-        agrupacionPorFecha,
-        analisisDetallado: analisisFechas,
-        inconsistencias: {
-          count: inconsistencias.length,
-          detalles: inconsistencias
-        },
-        resumen: `El paciente tiene ${todosExamenes.length} exámenes agrupados en ${Object.keys(agrupacionPorFecha).length} fechas diferentes`
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Error en diagnóstico completo:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-
-// ✅ ACTUALIZAR MÉTODO PARA OBTENER DATOS ACTUALIZADOS
-const obtenerDatosActualizados = async (req, res) => {
-  try {
-    const { pacienteId, fecha } = req.params;
-    
-    console.log('🔄 OBTENIENDO DATOS ACTUALIZADOS:', { pacienteId, fecha });
-
-    const fechaInicio = new Date(fecha + 'T00:00:00-05:00');
-    const fechaFin = new Date(fecha + 'T23:59:59.999-05:00');
-
-    const examenes = await ExamenPaciente.findAll({
-      where: {
-        pacienteId: pacienteId,
-        fechaAsignacion: {
-          [Op.between]: [fechaInicio, fechaFin]
-        }
-      },
-      attributes: ['id', 'total', 'abono', 'saldoPendiente', 'estadoPago', 'fechaAsignacion']
-    });
-
-    // ✅ CALCULAR TOTALES ACTUALIZADOS
-    let total = 0;
-    let abono = 0;
-    let pendiente = 0;
-
-    examenes.forEach(examen => {
-      total += parseFloat(examen.total || 0);
-      abono += parseFloat(examen.abono || 0);
-      pendiente += parseFloat(examen.saldoPendiente || 0);
-    });
-
-    const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'abono' : 'pendiente');
-
-    res.json({
-      success: true,
-      datos: {
-        total,
-        abono,
-        pendiente,
-        estadoPago: estadoPago,
-        cantidadExamenes: examenes.length,
-        examenes: examenes.map(ex => ({
-          id: ex.id,
-          total: ex.total,
-          abono: ex.abono,
-          saldoPendiente: ex.saldoPendiente,
-          estadoPago: ex.estadoPago,
-          fecha: ex.fechaAsignacion
-        }))
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Error obteniendo datos actualizados:', error);
-    res.status(500).json({
-      success: false,
-      mensaje: 'Error obteniendo datos actualizados',
-      error: error.message
-    });
-  }
-};
-
-// ✅ VERSIÓN COMPLETAMENTE CORREGIDA - PROCESAR PAGO GRUPAL
-// ✅ VERSIÓN CORREGIDA - PROCESAR PAGO GRUPAL
-const procesarPagoGrupal = async (req, res) => {
-  try {
-    const { pacienteId, fecha, montoTotal, metodoPago, laboratoristaId } = req.body;
-    
-    console.log('💰 BACKEND - PROCESANDO PAGO GRUPAL CORREGIDO:', {
-      pacienteId, fecha, montoTotal, metodoPago, laboratoristaId
-    });
-
-    // ✅ CORRECCIÓN: Usar fecha LOCAL (Ecuador UTC-5)
-    const fechaInicio = new Date(fecha + 'T00:00:00-05:00');
-    const fechaFin = new Date(fecha + 'T23:59:59.999-05:00');
-
-    console.log('📅 RANGO DE BÚSQUEDA (LOCAL Ecuador):', {
-      fechaSolicitada: fecha,
-      fechaInicio: fechaInicio.toISOString(),
-      fechaFin: fechaFin.toISOString(),
-      fechaInicioLocal: fechaInicio.toLocaleString('es-EC'),
-      fechaFinLocal: fechaFin.toLocaleString('es-EC')
-    });
-
-    // Buscar exámenes en el rango LOCAL
-    const examenesPaciente = await ExamenPaciente.findAll({
-      where: {
-        pacienteId: pacienteId,
-        fechaAsignacion: {
-          [Op.between]: [fechaInicio, fechaFin]
-        }
-      },
-      include: [
-        {
-          model: ExamenPacienteDetalle,
-          as: 'Detalles',
-          attributes: ['id', 'precioFinal', 'estado', 'nombreExamen']
-        }
-      ]
-    });
-
-    console.log(`🔍 ExamenPaciente encontrados para ${fecha}:`, examenesPaciente.length);
-
-    if (examenesPaciente.length === 0) {
-      // Diagnóstico adicional
-      const todasFechas = await ExamenPaciente.findAll({
-        where: { pacienteId: pacienteId },
-        attributes: ['id', 'fechaAsignacion', 'total'],
-        order: [['fechaAsignacion', 'DESC']],
-        raw: true
-      });
-      
-      const fechasFormateadas = todasFechas.map(f => 
-        new Date(f.fechaAsignacion).toLocaleDateString('es-EC')
-      );
-      
-      console.log('📋 FECHAS DISPONIBLES PARA ESTE PACIENTE:', fechasFormateadas);
-      
-      return res.status(404).json({
-        success: false,
-        mensaje: `No se encontraron exámenes para la fecha ${fecha}`,
-        fechasDisponibles: fechasFormateadas,
-        detalleExamenes: todasFechas.map(e => ({
-          id: e.id,
-          fechaAsignacion: e.fechaAsignacion,
-          fechaLocal: new Date(e.fechaAsignacion).toLocaleDateString('es-EC'),
-          total: e.total
-        }))
-      });
-    }
-
-
-    // ✅ CALCULAR TOTALES ACTUALES DEL GRUPO
-    let totalGrupo = 0;
-    let abonoActualGrupo = 0;
-    let saldoPendienteGrupo = 0;
-console.log('🔍 DEBUG - DETALLE DE CADA EXAMEN:');
-
-    examenesPaciente.forEach(examen => {
-      totalGrupo += parseFloat(examen.total || 0);
-      abonoActualGrupo += parseFloat(examen.abono || 0);
-    });
-
-    saldoPendienteGrupo = Math.max(0, totalGrupo - abonoActualGrupo);
-
-    console.log('💰 ESTADO ACTUAL DEL GRUPO:', {
-      totalGrupo,
-      abonoActualGrupo,
-      saldoPendienteGrupo,
-      montoPagado: montoTotal,
-      examenesCount: examenesPaciente.length
-    });
-
-    // ✅ VERIFICAR QUE EL MONTO NO EXCEDA EL SALDO
-    const montoNumerico = parseFloat(montoTotal);
-    if (montoNumerico > saldoPendienteGrupo) {
-      return res.status(400).json({
-        success: false,
-        mensaje: `El monto ($${montoNumerico.toFixed(2)}) excede el saldo pendiente ($${saldoPendienteGrupo.toFixed(2)})`,
-        saldoPendienteActual: saldoPendienteGrupo,
-        totalGrupo: totalGrupo,
-        abonoActual: abonoActualGrupo
-      });
-    }
-
-    // ✅ CALCULAR NUEVOS VALORES
-    const nuevoAbonoGrupo = abonoActualGrupo + montoNumerico;
-    const nuevoSaldoPendiente = Math.max(0, totalGrupo - nuevoAbonoGrupo);
-    
-    let estadoPagoGrupo;
-    if (nuevoSaldoPendiente <= 0) {
-      estadoPagoGrupo = 'pagado';
-    } else if (nuevoAbonoGrupo > 0) {
-      estadoPagoGrupo = 'abono';
-    } else {
-      estadoPagoGrupo = 'pendiente';
-    }
-
-    // ✅ ACTUALIZAR CADA ExamenPaciente (CABECERA)
-    const examenesActualizados = [];
-    
-    for (const examen of examenesPaciente) {
-      const precioExamen = parseFloat(examen.total || 0);
-      const abonoActual = parseFloat(examen.abono || 0);
-      const saldoExamen = Math.max(0, precioExamen - abonoActual);
-      
-      // Distribuir el pago proporcionalmente entre los exámenes
-      let abonoAdicional = 0;
-      if (saldoPendienteGrupo > 0) {
-        const proporcion = saldoExamen / saldoPendienteGrupo;
-        abonoAdicional = montoNumerico * proporcion;
-      }
-      
-      const nuevoAbono = abonoActual + abonoAdicional;
-      
-      let nuevoEstadoPago;
-      if (nuevoAbono >= precioExamen) {
-        nuevoEstadoPago = 'pagado';
-      } else if (nuevoAbono > 0) {
-        nuevoEstadoPago = 'abono';
-      } else {
-        nuevoEstadoPago = 'pendiente';
-      }
-
-      // Actualizar el examen
-      await examen.update({
-        abono: nuevoAbono,
-        estadoPago: nuevoEstadoPago,
-        metodoPago: metodoPago,
-        saldoPendiente: Math.max(0, precioExamen - nuevoAbono)
-      });
-
-      examenesActualizados.push({
-        id: examen.id,
-        total: precioExamen,
-        abonoAnterior: abonoActual,
-        abonoNuevo: nuevoAbono,
-        estadoPago: nuevoEstadoPago,
-        detallesCount: examen.Detalles?.length || 0
-      });
-    }
-
-    // ✅ CREAR REGISTRO DE PAGO
-    const nuevoPago = await Pago.create({
-      pacienteId: pacienteId,
-      laboratoristaId: laboratoristaId || 1,
-      monto: montoNumerico,
-      metodoPago: metodoPago,
-      tipo: 'grupal',
-      estado: 'completado',
-      fechaPago: new Date(),
-      referencia: `Pago grupal - ${fecha} - ${examenesPaciente.length} exámenes`
-    });
-
-    console.log('✅ PAGO GRUPAL PROCESADO EXITOSAMENTE:', {
-      pagoId: nuevoPago.id,
-      estadoPagoGrupo,
-      totalGrupo,
-      abonoTotal: nuevoAbonoGrupo,
-      saldoPendiente: nuevoSaldoPendiente,
-      examenesActualizados: examenesActualizados.length,
-      fechaProcesada: fecha
-    });
-
-    res.json({
-      success: true,
-      mensaje: `Pago grupal de $${montoNumerico.toFixed(2)} procesado exitosamente para ${examenesPaciente.length} exámenes`,
-      pago: {
-        id: nuevoPago.id,
-        monto: montoNumerico,
-        metodoPago: metodoPago,
-        fecha: nuevoPago.fechaPago,
-        referencia: nuevoPago.referencia
-      },
-      grupo: {
-        estadoPago: estadoPagoGrupo,
-        financiero: {
-          total: totalGrupo,
-          abonado: nuevoAbonoGrupo,
-          pendiente: nuevoSaldoPendiente
-        },
-        examenesActualizados: examenesActualizados.length,
-        fecha: fecha
-      },
-      detalles: {
-        examenes: examenesActualizados,
-        pagoId: nuevoPago.id
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ ERROR EN PAGO GRUPAL:', error);
-    res.status(500).json({
-      success: false,
-      mensaje: 'Error interno del servidor al procesar pago grupal',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-};
-
-
-
-// ✅ VERSIÓN COMPLETAMENTE CORREGIDA - OBTENER RESUMEN GRUPAL
-const obtenerResumenGrupalPorFecha = async (req, res) => {
-  try {
-    const { pacienteId, fecha } = req.params;
-    
-    console.log('📊 OBTENIENDO RESUMEN GRUPAL - FECHA SOLICITADA:', { pacienteId, fecha });
-
-    // ✅ CORRECCIÓN CRÍTICA: Usar fecha local (Ecuador UTC-5)
-    const fechaInicio = new Date(fecha + 'T00:00:00-05:00');
-    const fechaFin = new Date(fecha + 'T23:59:59.999-05:00');
-
-    console.log('🔍 RANGO DE BÚSQUEDA CORREGIDO (LOCAL Ecuador):', {
-      fechaSolicitada: fecha,
-      fechaInicio: fechaInicio.toISOString(),
-      fechaFin: fechaFin.toISOString(),
-      fechaInicioLocal: fechaInicio.toLocaleString('es-EC'),
-      fechaFinLocal: fechaFin.toLocaleString('es-EC')
-    });
-
-    // Buscar exámenes en el rango de fecha LOCAL
-    const examenesPaciente = await db.ExamenPaciente.findAll({
-      where: { 
-        pacienteId: pacienteId,
-        fechaAsignacion: {
-          [Op.between]: [fechaInicio, fechaFin]
-        }
-      },
-      include: [
-        {
-          model: db.ExamenPacienteDetalle,
-          as: 'Detalles',
-          attributes: ['id', 'nombreExamen', 'precioFinal', 'estado']
-        }
-      ],
       order: [['fechaAsignacion', 'DESC']]
     });
 
-    console.log(`📊 Exámenes encontrados para ${fecha}:`, examenesPaciente.length);
-
-    // Si no encuentra, hacer diagnóstico detallado
-    if (examenesPaciente.length === 0) {
-      console.log('⚠️ No se encontraron exámenes, haciendo diagnóstico...');
-      
-      // Obtener TODOS los exámenes del paciente para diagnóstico
-      const todosExamenes = await db.ExamenPaciente.findAll({
-        where: { pacienteId },
-        attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'estadoPago'],
-        order: [['fechaAsignacion', 'DESC']],
-        raw: true
-      });
-
-      console.log('🔍 TODOS LOS EXAMENES DEL PACIENTE:');
-      todosExamenes.forEach(examen => {
-        const fechaLocal = new Date(examen.fechaAsignacion).toLocaleDateString('es-EC');
-        const fechaISO = new Date(examen.fechaAsignacion).toISOString();
-        console.log(`   - ID: ${examen.id}, Fecha BD: ${examen.fechaAsignacion}`);
-        console.log(`     Fecha Local: ${fechaLocal}, Fecha ISO: ${fechaISO}`);
-        console.log(`     Total: ${examen.total}, Estado: ${examen.estadoPago}`);
-      });
-
-      // Buscar por fecha local como fallback
-      const examenesPorFechaLocal = todosExamenes.filter(examen => {
-        const fechaExamenLocal = new Date(examen.fechaAsignacion).toLocaleDateString('es-EC');
-        const fechaSolicitadaLocal = new Date(fecha + 'T00:00:00-05:00').toLocaleDateString('es-EC');
-        return fechaExamenLocal === fechaSolicitadaLocal;
-      });
-
-      console.log(`🔍 Búsqueda por fecha local: ${examenesPorFechaLocal.length} exámenes`);
-
-      // Usar los exámenes por fecha local si se encontraron
-      const examenesEnFecha = examenesPorFechaLocal.length > 0 ? 
-        await db.ExamenPaciente.findAll({
-          where: { id: examenesPorFechaLocal.map(e => e.id) },
-          include: [{ model: db.ExamenPacienteDetalle, as: 'Detalles' }]
-        }) : [];
-
-      let total = 0;
-      let abono = 0;
-      let pendiente = 0;
-      
-      for (const examen of examenesEnFecha) {
-        total += parseFloat(examen.total || 0);
-        abono += parseFloat(examen.abono || 0);
-        pendiente += (parseFloat(examen.total || 0) - parseFloat(examen.abono || 0));
-      }
-
-      const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'abono' : 'pendiente');
-
-      console.log('📈 RESUMEN FINAL (FALLBACK):', { 
-        total, 
-        abono, 
-        pendiente, 
-        estadoPago,
-        examenesCount: examenesEnFecha.length,
-        fechaSolicitada: fecha
-      });
-
-      return res.json({
-        success: true,
-        grupo: {
-          total,
-          abono,
-          pendiente,
-          estadoPago: estadoPago,
-          cantidadExamenes: examenesEnFecha.length,
-          fecha: fecha,
-          debug: {
-            busquedaLocal: examenesPaciente.length,
-            busquedaFallback: examenesPorFechaLocal.length,
-            fechaSolicitada: fecha,
-            metodoUtilizado: examenesPorFechaLocal.length > 0 ? 'fecha_local_fallback' : 'sin_examenes',
-            totalExamenesPaciente: todosExamenes.length
-          }
-        }
-      });
-    }
-
-    // ✅ CALCULAR TOTALES CON EXAMENES ENCONTRADOS
-    let total = 0;
-    let abono = 0;
-    let pendiente = 0;
-    
-    for (const examen of examenesPaciente) {
-      total += parseFloat(examen.total || 0);
-      abono += parseFloat(examen.abono || 0);
-      pendiente += (parseFloat(examen.total || 0) - parseFloat(examen.abono || 0));
-    }
-
-    const estadoPago = pendiente <= 0 ? 'pagado' : (abono > 0 ? 'abono' : 'pendiente');
-
-    console.log('📈 RESUMEN FINAL:', { 
-      total, 
-      abono, 
-      pendiente, 
-      estadoPago,
-      examenesCount: examenesPaciente.length,
-      fechaSolicitada: fecha
+    const analisis = cabeceras.map(c => {
+      const fa = new Date(c.fechaAsignacion);
+      const ca = new Date(c.createdAt);
+      return {
+        id: c.id,
+        fechaAsignacionISO: fa.toISOString(),
+        fechaAsignacionLocal: fa.toLocaleString('es-EC'),
+        createdAtISO: ca.toISOString(),
+        createdAtLocal: ca.toLocaleString('es-EC'),
+        total: toNum(c.total),
+        abono: toNum(c.abono),
+        estadoPago: c.estadoPago
+      };
     });
 
-    res.json({
+    return res.json({
       success: true,
-      grupo: {
-        total,
-        abono,
-        pendiente,
-        estadoPago: estadoPago,
-        cantidadExamenes: examenesPaciente.length,
-        fecha: fecha,
-        examenes: examenesPaciente.map(ex => ({
-          id: ex.id,
-          fechaAsignacion: ex.fechaAsignacion,
-          total: ex.total,
-          abono: ex.abono,
-          estadoPago: ex.estadoPago,
-          detallesCount: ex.Detalles?.length || 0
-        }))
+      diagnostico: {
+        pacienteId,
+        totalCabeceras: cabeceras.length,
+        analisis
       }
     });
 
   } catch (error) {
-    console.error('❌ Error en obtenerResumenGrupalPorFecha:', error);
-    res.status(500).json({
-      success: false,
-      mensaje: 'Error al obtener resumen grupal',
-      error: error.message
-    });
+    console.error('❌ Error en diagnosticoCompletoFechas:', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// ✅ VERSIÓN CORREGIDA - PROCESAR PAGO GRUPAL
 
+// =======================================================
+// ✅ VERIFICAR SALDO (USA MISMA LÓGICA DEL RESUMEN)
+// GET /verificar-saldo/:pacienteId/:fecha
+// =======================================================
+const verificarSaldo = async (req, res) => {
+  try {
+    const { pacienteId, fecha } = req.params;
+
+    const cabeceras = await ExamenPaciente.findAll({
+      where: { pacienteId, [Op.and]: whereByDate(fecha) },
+      order: [['fechaAsignacion', 'ASC']]
+    });
+
+    let total = 0, abono = 0;
+
+    for (const cab of cabeceras) {
+      await recalcularCabecera(cab.id); // asegura consistencia
+      total += round2(toNum(cab.total));
+      abono += round2(toNum(cab.abono));
+    }
+
+    total = round2(total);
+    abono = round2(abono);
+
+    const pendiente = round2(Math.max(0, total - abono));
+    const estadoPago = calcularSaldos(total, abono).estadoPago;
+
+    return res.json({
+  success: true,
+  fecha,
+  pacienteId,
+  encontrado: cabeceras.length > 0,
+  total,
+  abono,
+  pendiente,
+  saldoPendiente: pendiente,   // ✅ CLAVE ÚNICA
+  estadoPago,
+  cabeceras: cabeceras.length
+});
+
+
+  } catch (error) {
+    console.error('❌ verificarSaldo:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+
+// =======================================================
+// ✅ DIAGNÓSTICO PACIENTE (PARA TU FRONT)
+// GET /diagnostico-paciente/:pacienteId
+// Devuelve últimas cabeceras y fechas reales registradas.
+// =======================================================
+const diagnosticarPaciente = async (req, res) => {
+  try {
+    const { pacienteId } = req.params;
+
+    const cabeceras = await ExamenPaciente.findAll({
+      where: { pacienteId },
+      attributes: ['id', 'fechaAsignacion', 'total', 'abono', 'saldoPendiente', 'estadoPago', 'createdAt'],
+      order: [['fechaAsignacion', 'DESC']],
+      limit: 30
+    });
+
+    return res.json({
+      success: true,
+      pacienteId,
+      totalCabeceras: cabeceras.length,
+      cabeceras
+    });
+
+  } catch (error) {
+    console.error('❌ diagnosticarPaciente:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ✅ SALDO REAL DEL GRUPO (sumando saldoPendiente de cada cabecera)
+const verificarSaldoReal = async (req, res) => {
+  try {
+    const { pacienteId, fecha } = req.params;
+
+    const cabeceras = await ExamenPaciente.findAll({
+      where: { pacienteId, [Op.and]: whereByDate(fecha) },
+      attributes: ['id', 'total', 'abono', 'saldoPendiente', 'estadoPago', 'fechaAsignacion'],
+      order: [['fechaAsignacion', 'ASC']]
+    });
+
+    if (!cabeceras.length) {
+      return res.status(404).json({ success: false, mensaje: `No se encontraron exámenes para la fecha ${fecha}` });
+    }
+
+    const total = round2(cabeceras.reduce((acc, c) => acc + toNum(c.total), 0));
+    const abono = round2(cabeceras.reduce((acc, c) => acc + toNum(c.abono), 0));
+    const pendienteReal = round2(cabeceras.reduce((acc, c) => acc + toNum(c.saldoPendiente), 0));
+
+    return res.json({
+  success: true,
+  pacienteId,
+  fecha,
+  total,
+  abono,
+  pendienteReal,
+  saldoPendiente: pendienteReal, // ✅ CLAVE ÚNICA
+  cantidad: cabeceras.length,
+  cabeceras
+});
+
+
+  } catch (error) {
+    console.error('❌ Error verificarSaldoReal:', error);
+    res.status(500).json({ success: false, mensaje: 'Error interno', error: error.message });
+  }
+};
+
+
+// =========================
+// ✅ EXPORTS
+// =========================
 module.exports = {
+  // principales
+  procesarPagosMultiples,
+  obtenerDetalleGrupoPago,
   actualizarEstadoPago,
   registrarAbono,
-  procesarPagosMultiples,
-  procesarPagoGrupal,
   obtenerResumenGrupalPorFecha,
-  obtenerDetalleGrupoPago,
+  procesarPagoGrupal,
+  obtenerDatosActualizados,
+
+  // diagnósticos
   diagnosticarFechasPago,
   diagnosticoCompletoPago,
   buscarCabecerasPorFecha,
+  verificarSaldo,
+verificarSaldoReal,
+diagnosticarPaciente,
+
+
+  // helpers (por si los usas en pruebas)
+  calcularSaldos,
+
+  // ✅ AGREGA ESTOS 2
   diagnosticarFechasPagoGrupal,
   diagnosticoCompletoFechas,
-  obtenerDatosActualizados
 };

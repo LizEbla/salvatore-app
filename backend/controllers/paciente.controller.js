@@ -1,3 +1,5 @@
+//controller/paciente.controller.js
+
 const db = require('../models');
 const { Op, Sequelize } = require('sequelize');
 const bcrypt = require('bcryptjs');
@@ -518,10 +520,306 @@ let nombreLaboratorista = req.usuario ? `${req.usuario.nombres} ${req.usuario.ap
 };
 
 
+const getExamenesPendientes = async (req, res) => {
+  try {
+    const { estado = 'pendiente' } = req.query;
+
+    console.log('🔍 Parámetros recibidos para exámenes pendientes:', req.query);
+
+    const db = require('../models');
+    const { ExamenPacienteDetalle, ExamenPaciente, Paciente, Laboratorista, Sucursal } = db;
+
+    // Consulta usando SOLO columnas que existen según tu modelo
+    const examenesPendientes = await ExamenPacienteDetalle.findAll({
+      where: { estado: estado },
+      include: [
+        {
+          model: ExamenPaciente,
+          as: 'Cabecera',
+          required: true,
+          include: [
+            {
+              model: Paciente,
+              as: 'Paciente',
+              required: true,
+              attributes: ['id', 'nombres', 'apellidos', 'cedula', 'edad', 'sexo', 'telefono', 'correo']
+            }
+          ]
+        },
+        {
+          model: Laboratorista,
+          as: 'Laboratorista',
+          required: false,
+          attributes: ['id', 'nombres', 'apellidos', 'cedula', 'telefono', 'especialidad']
+        },
+        {
+          model: Sucursal,
+          as: 'Sucursal',
+          required: false,
+          attributes: ['id', 'nombre', 'direccion', 'telefono', 'ciudad']
+        }
+      ],
+      // SOLO columnas que EXISTEN según tu modelo
+      attributes: [
+        'id', 
+        'examenPacienteId', 
+        'examenId',
+        'subexamenId',
+        'nombreExamen', 
+        'estado', 
+        'createdAt', 
+        'updatedAt',
+        'precioAplicado',
+        'descuentoAplicado',
+        'precioFinal', 
+        'observaciones', 
+        'laboratoristaId', 
+        'sucursalId', 
+        'registradoPor', // ✅ Esta SÍ existe
+        'fechaRegistro', 
+        'horaRegistro', 
+        'laboratorio',
+        'esSubexamen',
+        'fechaCompletado',
+        'medicoSolicitanteDetalle',
+        'conPromocion',
+        'promocionId'
+        // ❌ NO incluir 'asignadoPor' - NO existe
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 50
+    });
+
+    console.log(`✅ Exámenes pendientes encontrados: ${examenesPendientes.length}`);
+
+    // Formatear respuesta completa
+    const datosFormateados = examenesPendientes.map(item => {
+      const fechaRegistro = item.fechaRegistro || item.createdAt;
+      
+      // Determinar tipo de examen
+      const tipoExamen = item.esSubexamen ? 'Subexamen' : 'Examen Principal';
+      
+      // Formatear fechas
+      const fechaFormateada = fechaRegistro ? 
+        new Date(fechaRegistro).toLocaleDateString('es-EC', { 
+          year: 'numeric', 
+          month: '2-digit', 
+          day: '2-digit' 
+        }) : 'Sin fecha';
+      
+      const horaFormateada = item.horaRegistro || 
+        (fechaRegistro ? 
+          new Date(fechaRegistro).toLocaleTimeString('es-EC', {
+            hour: '2-digit',
+            minute: '2-digit'
+          }) : 'Sin hora');
+
+      return {
+        // Información principal
+        id: item.id,
+        detalleId: item.id,
+        examenPacienteId: item.examenPacienteId,
+        nombreExamen: item.nombreExamen,
+        estado: item.estado,
+        tipoExamen: tipoExamen,
+        
+        // Precios
+        precioAplicado: item.precioAplicado,
+        descuentoAplicado: item.descuentoAplicado,
+        precioFinal: item.precioFinal,
+        conPromocion: item.conPromocion || false,
+        
+        // Observaciones y médico
+        observaciones: item.observaciones || '',
+        medicoSolicitanteDetalle: item.medicoSolicitanteDetalle || '',
+        
+        // Fechas
+        fechaRegistro: fechaRegistro,
+        fechaRegistroFormateada: fechaFormateada,
+        horaRegistroFormateada: horaFormateada,
+        fechaActualizacion: item.updatedAt,
+        fechaCompletado: item.fechaCompletado,
+        
+        // Información del paciente
+        paciente: item.Cabecera?.Paciente ? {
+          id: item.Cabecera.Paciente.id,
+          nombres: item.Cabecera.Paciente.nombres,
+          apellidos: item.Cabecera.Paciente.apellidos,
+          nombreCompleto: `${item.Cabecera.Paciente.nombres} ${item.Cabecera.Paciente.apellidos}`,
+          cedula: item.Cabecera.Paciente.cedula,
+          telefono: item.Cabecera.Paciente.telefono,
+          edad: item.Cabecera.Paciente.edad,
+          sexo: item.Cabecera.Paciente.sexo,
+          correo: item.Cabecera.Paciente.correo
+        } : null,
+        
+        // Laboratorista asignado (desde include)
+        laboratorista: item.Laboratorista ? {
+          id: item.Laboratorista.id,
+          nombreCompleto: `${item.Laboratorista.nombres} ${item.Laboratorista.apellidos}`,
+          cedula: item.Laboratorista.cedula,
+          telefono: item.Laboratorista.telefono,
+          especialidad: item.Laboratorista.especialidad
+        } : item.laboratoristaId ? {
+          id: item.laboratoristaId,
+          nombreCompleto: `Laboratorista ID: ${item.laboratoristaId}`
+        } : null,
+        
+        // Quién registró (DIRECTAMENTE de la base de datos)
+        registradoPor: item.registradoPor || 'No especificado',
+        
+        // Sucursal (desde include)
+        sucursal: item.Sucursal ? {
+          id: item.Sucursal.id,
+          nombre: item.Sucursal.nombre,
+          direccion: item.Sucursal.direccion,
+          telefono: item.Sucursal.telefono,
+          ciudad: item.Sucursal.ciudad
+        } : item.sucursalId ? {
+          id: item.sucursalId,
+          nombre: `Sucursal ID: ${item.sucursalId}`
+        } : {
+          nombre: item.laboratorio || 'Laboratorio Central',
+          tipo: 'laboratorio'
+        },
+        
+        // Información de la cabecera
+        cabecera: {
+          id: item.Cabecera?.id,
+          fechaAsignacion: item.Cabecera?.fechaAsignacion,
+          medicoSolicitante: item.Cabecera?.medicoSolicitante || '',
+          estadoPago: item.Cabecera?.estadoPago || 'pendiente',
+          total: item.Cabecera?.total,
+          abono: item.Cabecera?.abono,
+          saldoPendiente: item.Cabecera?.saldoPendiente
+        },
+        
+        // IDs para referencia
+        ids: {
+          examenId: item.examenId,
+          subexamenId: item.subexamenId,
+          laboratoristaId: item.laboratoristaId,
+          sucursalId: item.sucursalId,
+          promocionId: item.promocionId
+        },
+        
+        // Información técnica
+        laboratorio: item.laboratorio || 'Laboratorio Central',
+        esSubexamen: item.esSubexamen || false
+      };
+    });
+
+    res.json({
+      success: true,
+      data: datosFormateados,
+      count: datosFormateados.length,
+      message: 'Exámenes pendientes obtenidos correctamente',
+      estadisticas: {
+        total: datosFormateados.length,
+        conLaboratorista: datosFormateados.filter(d => d.laboratorista).length,
+        conSucursal: datosFormateados.filter(d => d.sucursal && d.sucursal.id).length,
+        conRegistradoPor: datosFormateados.filter(d => d.registradoPor !== 'No especificado').length,
+        examenesPrincipales: datosFormateados.filter(d => !d.esSubexamen).length,
+        subexamenes: datosFormateados.filter(d => d.esSubexamen).length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error al obtener exámenes pendientes:', error);
+    
+    // Versión de emergencia más simple
+    try {
+      const db = require('../models');
+      const { ExamenPacienteDetalle } = db;
+      
+      const datosBasicos = await ExamenPacienteDetalle.findAll({
+        where: { estado: 'pendiente' },
+        attributes: ['id', 'nombreExamen', 'estado', 'createdAt', 'registradoPor', 'precioFinal'],
+        order: [['createdAt', 'DESC']],
+        limit: 20,
+        raw: true
+      });
+      
+      const datosSimples = datosBasicos.map(item => ({
+        id: item.id,
+        nombreExamen: item.nombreExamen,
+        estado: item.estado,
+        precioFinal: item.precioFinal,
+        fechaRegistro: item.createdAt,
+        fechaRegistroFormateada: item.createdAt ? 
+          new Date(item.createdAt).toLocaleDateString('es-EC') : 'Sin fecha',
+        registradoPor: item.registradoPor || 'No especificado'
+      }));
+      
+      res.json({
+        success: true,
+        data: datosSimples,
+        count: datosSimples.length,
+        message: 'Datos básicos obtenidos'
+      });
+    } catch (fallbackError) {
+      res.status(500).json({ 
+        success: false, 
+        message: 'Error al obtener exámenes pendientes',
+        error: error.message,
+        detalle: 'Verificar que las columnas en attributes existen en el modelo'
+      });
+    }
+  }
+};
 
 
 
+const debugAsociaciones = async (req, res) => {
+  try {
+    const db = require('../models');
+    const { ExamenPaciente, ExamenPacienteDetalle } = db;
+    
+    res.json({
+      ExamenPaciente_associations: Object.keys(ExamenPaciente.associations || {}),
+      ExamenPacienteDetalle_associations: Object.keys(ExamenPacienteDetalle.associations || {}),
+      ExamenPaciente_associations_detalles: ExamenPaciente.associations || {},
+      ExamenPacienteDetalle_associations_detalles: ExamenPacienteDetalle.associations || {}
+    });
+  } catch (error) {
+    console.error('Error en debugAsociaciones:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
 
+// En paciente.controller.js, agrega:
+const debugAsociacionesExamenDetalle = async (req, res) => {
+  try {
+    const db = require('../models');
+    const { ExamenPacienteDetalle } = db;
+    
+    const asociaciones = {};
+    
+    if (ExamenPacienteDetalle.associations) {
+      Object.keys(ExamenPacienteDetalle.associations).forEach(key => {
+        const assoc = ExamenPacienteDetalle.associations[key];
+        asociaciones[key] = {
+          target: assoc.target.name,
+          associationType: assoc.associationType,
+          options: {
+            as: assoc.options.as,
+            foreignKey: assoc.options.foreignKey
+          }
+        };
+      });
+    }
+    
+    res.json({
+      modelo: 'ExamenPacienteDetalle',
+      asociaciones: asociaciones,
+      todasLasKeys: Object.keys(ExamenPacienteDetalle.associations || {})
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// En paciente.routes.js:
 module.exports = {
   // CRUD BÁSICO
   crearPaciente,
@@ -540,7 +838,9 @@ module.exports = {
   debugPacientesPorFecha,
   debugDatosRecibidos,
   debugUserInfo,
-  
+  getExamenesPendientes,
+  debugAsociaciones,
+  debugAsociacionesExamenDetalle,
   // FUNCIONES AUXILIARES
   ajustarFechaParaZonaHoraria
 };

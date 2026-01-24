@@ -2,13 +2,18 @@
 const db = require('../models');
 const { Sequelize } = db;
 
+
+
 const {
   Paciente,
   ExamenPaciente,
   ExamenPacienteDetalle,
   Examen,
-  Area
+  Area,
+  Laboratorista // ✅ AÑADIR
 } = db;
+
+
 
 const Op = Sequelize.Op;
 
@@ -170,7 +175,7 @@ exports.generarPdfOrden = async (req, res) => {
           as: "Detalles",
           where: { 
             estado: 'completado', 
-            pdfGenerado: { [Op.not]: null } 
+            
           },
           include: [
             { 
@@ -200,146 +205,8 @@ exports.generarPdfOrden = async (req, res) => {
   }
 };
 
-/* ===========================================================
-   🔵 4. PDF INDIVIDUAL - CORREGIDO
-=========================================================== */
-exports.generarPdfIndividual = async (req, res) => {
-  try {
-    const { examenId } = req.params;
-    const pacienteId = req.usuario.id;
 
-    console.log(`📄 Generando PDF individual: ${examenId}, paciente: ${pacienteId}`);
 
-    const detalle = await ExamenPacienteDetalle.findOne({
-      where: {
-        id: examenId,
-        estado: 'completado',
-        pdfGenerado: { [Op.not]: null }
-      },
-      include: [
-        {
-          model: ExamenPaciente,
-          as: 'Cabecera',
-          where: { pacienteId },
-          include: [{ 
-            model: Paciente, 
-            as: 'Paciente', 
-            attributes: ['id','nombres','apellidos','cedula'] 
-          }]
-        },
-        {
-          model: Examen,
-          as: 'Examen',
-          attributes: ['id','nombre']
-        }
-      ]
-    });
-
-    if (!detalle) {
-      return res.status(404).json({ 
-        message: 'Examen no disponible para descarga' 
-      });
-    }
-
-    const orden = detalle.Cabecera;
-    const pagoOk = orden.estadoPago === 'pagado' ||
-                  (orden.estadoPago === 'parcial' && Number(orden.saldoPendiente) === 0);
-
-    if (!pagoOk) {
-      return res.status(403).json({ 
-        message: 'El examen no está pagado.' 
-      });
-    }
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 
-      `attachment; filename="resultado_${detalle.Examen?.nombre || 'examen'}.pdf"`);
-    
-    return res.send(detalle.pdfGenerado);
-
-  } catch (error) {
-    console.error("❌ Error en PDF individual:", error);
-    res.status(500).json({ 
-      message: 'Error sirviendo PDF', 
-      error: error.message 
-    });
-  }
-};
-
-/* ===========================================================
-   🔵 5. PDFs EXISTENTES POR FECHA - CORREGIDO
-=========================================================== */
-exports.obtenerPdfsExistentesPorFecha = async (req, res) => {
-  try {
-    const { fecha } = req.params;
-    const pacienteId = req.usuario.id;
-
-    console.log(`🔍 Obteniendo PDFs existentes para fecha: ${fecha}, paciente: ${pacienteId}`);
-
-    const examenes = await ExamenPaciente.findAll({
-      where: { 
-        pacienteId, 
-        fechaAsignacion: { [Op.like]: `${fecha}%` } 
-      },
-      include: [
-        {
-          model: ExamenPacienteDetalle,
-          as: 'Detalles',
-          where: { 
-            estado: 'completado', 
-            pdfGenerado: { [Op.not]: null } 
-          },
-          include: [
-            { 
-              model: Examen, 
-              as: 'Examen', 
-              attributes: ['id','nombre'] 
-            }
-          ]
-        },
-        {
-          model: Paciente,
-          as: 'Paciente',
-          attributes: ['id','nombres','apellidos','cedula']
-        }
-      ]
-    });
-
-    if (!examenes.length) {
-      return res.status(404).json({ 
-        message: 'No hay PDFs para esta fecha' 
-      });
-    }
-
-    const pdfs = [];
-
-    examenes.forEach(ord => {
-      (ord.Detalles || []).forEach(d => {
-        pdfs.push({
-          ordenId: ord.id,
-          detalleId: d.id,
-          examenNombre: d.Examen?.nombre,
-          cedula: ord.Paciente?.cedula,
-          fecha: ord.fechaAsignacion,
-          pdfSize: d.pdfGenerado?.length || 0
-        });
-      });
-    });
-
-    return res.json({
-      fecha,
-      totalPdfs: pdfs.length,
-      pdfs
-    });
-
-  } catch (error) {
-    console.error("❌ Error obteniendo PDFs:", error);
-    res.status(500).json({ 
-      message: 'Error obteniendo PDFs', 
-      error: error.message 
-    });
-  }
-};
 
 /* ===========================================================
    🔵 6. HISTORIAL AGRUPADO - CORREGIDO
@@ -356,22 +223,33 @@ exports.obtenerHistorialAgrupado = async (req, res) => {
         {
           model: ExamenPacienteDetalle,
           as: 'Detalles',
+          // ✅ IMPORTANTE: necesitamos resultados/plantilla en esta respuesta
+          attributes: [
+            'id',
+            'examenId',
+            'precioFinal',
+            'estado',
+            'resultados',
+            'parametrosResultados'
+          ],
           include: [
             {
               model: Examen,
               as: 'Examen',
-              include: [{ 
-                model: Area, 
-                as: 'Area', 
-                attributes: ['id','nombre'] 
-              }],
-              attributes: ['id','nombre']
+              include: [
+                {
+                  model: Area,
+                  as: 'Area',
+                  attributes: ['id', 'nombre']
+                }
+              ],
+              attributes: ['id', 'nombre']
             }
           ]
         }
       ],
       order: [
-        ['fechaAsignacion','DESC'],
+        ['fechaAsignacion', 'DESC'],
         [{ model: ExamenPacienteDetalle, as: 'Detalles' }, 'id', 'ASC']
       ]
     });
@@ -380,27 +258,30 @@ exports.obtenerHistorialAgrupado = async (req, res) => {
 
     for (const ord of ordenes) {
       const f = new Date(ord.fechaAsignacion);
-      const fechaKey = `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`;
+      const fechaKey = `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(
+        f.getDate()
+      ).padStart(2, '0')}`;
 
       if (!porFecha[fechaKey]) {
         porFecha[fechaKey] = {
           fechaISO: fechaKey,
-          fechaFormateada: f.toLocaleDateString("es-EC", {
-            day: "numeric",
-            month: "long",
-            year: "numeric"
+          fechaFormateada: f.toLocaleDateString('es-EC', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
           }),
           ordenes: []
         };
       }
 
-      const pagoOk = ord.estadoPago === 'pagado' ||
-                    (ord.estadoPago === 'parcial' && Number(ord.saldoPendiente || 0) === 0);
+      const pagoOk =
+        ord.estadoPago === 'pagado' ||
+        (ord.estadoPago === 'parcial' && Number(ord.saldoPendiente || 0) === 0);
 
       const areasMap = {};
 
-      (ord.Detalles || []).forEach(det => {
-        const area = det.Examen?.Area?.nombre || "Sin Área";
+      (ord.Detalles || []).forEach((det) => {
+        const area = det.Examen?.Area?.nombre || 'Sin Área';
 
         if (!areasMap[area]) {
           areasMap[area] = {
@@ -409,9 +290,22 @@ exports.obtenerHistorialAgrupado = async (req, res) => {
           };
         }
 
-        const puedeVer = pagoOk && 
-                        det.estado === "completado" && 
-                        det.pdfGenerado !== null;
+        // ✅ 1) tieneResultados: objeto con llaves o string no vacío
+        const tieneResultados =
+          det.resultados &&
+          ((typeof det.resultados === 'object' && Object.keys(det.resultados).length > 0) ||
+            (typeof det.resultados === 'string' && det.resultados.trim().length > 0));
+
+        // ✅ 2) tienePlantilla (parametrosResultados)
+        const tienePlantilla =
+          det.parametrosResultados &&
+          ((typeof det.parametrosResultados === 'object' &&
+            Object.keys(det.parametrosResultados).length > 0) ||
+            (typeof det.parametrosResultados === 'string' &&
+              det.parametrosResultados.trim().length > 0));
+
+        // ✅ 3) AHORA "puedeVer" ya NO depende de pdfGenerado
+        const puedeVer = pagoOk && det.estado === 'completado' && (tieneResultados || tienePlantilla);
 
         areasMap[area].examenes.push({
           id: det.id,
@@ -419,12 +313,18 @@ exports.obtenerHistorialAgrupado = async (req, res) => {
           nombre: det.Examen?.nombre || 'Examen sin nombre',
           estado: det.estado,
           precio: det.precioFinal,
-          tienePdf: det.pdfGenerado !== null,
-          puedeVer: puedeVer,
+
+          // ✅ flags útiles para el frontend
+          tieneResultados: !!tieneResultados,
+          tienePlantilla: !!tienePlantilla,
+
+          puedeVer,
+
           debug: {
             pagoOk,
-            completado: det.estado === "completado",
-            pdf: det.pdfGenerado ? "sí" : "no"
+            completado: det.estado === 'completado',
+            tieneResultados: !!tieneResultados,
+            tienePlantilla: !!tienePlantilla
           }
         });
       });
@@ -435,127 +335,24 @@ exports.obtenerHistorialAgrupado = async (req, res) => {
         estadoPago: ord.estadoPago,
         saldoPendiente: ord.saldoPendiente,
         pagoOk,
-        resultadosOk: (ord.Detalles || []).some(d => d.pdfGenerado),
-        puedeVerOrden: (ord.Detalles || []).every(d => d.pdfGenerado),
         areas: Object.values(areasMap)
       });
     }
 
     return res.json(Object.values(porFecha));
-
   } catch (error) {
-    console.error("❌ Error historial agrupado:", error);
-    res.status(500).json({ 
-      message: 'Error obteniendo historial', 
-      error: error.message 
+    console.error('❌ Error historial agrupado:', error);
+    res.status(500).json({
+      message: 'Error obteniendo historial',
+      error: error.message
     });
   }
 };
 
-/* ===========================================================
-   🔵 7. DIAGNÓSTICO DE PDFs - CORREGIDO
-=========================================================== */
-exports.diagnosticoPdfs = async (req, res) => {
-  try {
-    const pacienteId = req.usuario.id;
 
-    console.log(`🔧 Diagnóstico PDFs para paciente: ${pacienteId}`);
 
-    const detalles = await ExamenPacienteDetalle.findAll({
-      include: [
-        {
-          model: ExamenPaciente,
-          as: 'Cabecera',
-          where: { pacienteId },
-          attributes: ['id', 'fechaAsignacion', 'estadoPago']
-        },
-        {
-          model: Examen,
-          as: 'Examen',
-          attributes: ['nombre']
-        }
-      ]
-    });
 
-    const data = detalles.map(det => ({
-      detalleId: det.id,
-      examen: det.Examen?.nombre,
-      fecha: det.Cabecera?.fechaAsignacion,
-      estado: det.estado,
-      tienePdf: !!det.pdfGenerado,
-      pdfSize: det.pdfGenerado?.length || 0
-    }));
 
-    return res.json({
-      total: data.length,
-      completos: data.filter(d => d.tienePdf).length,
-      pendientes: data.filter(d => !d.tienePdf).length,
-      data
-    });
-
-  } catch (error) {
-    console.error("❌ Error en diagnóstico PDFs:", error);
-    return res.status(500).json({ 
-      message: 'Error en diagnóstico', 
-      error: error.message 
-    });
-  }
-};
-
-/* ===========================================================
-   🔵 8. DATOS COMPLETOS DEL EXAMEN - CORREGIDO
-=========================================================== */
-exports.obtenerDatosExamenCompleto = async (req, res) => {
-  try {
-    const { detalleId } = req.params;
-    const pacienteId = req.usuario.id;
-
-    console.log(`📋 Obteniendo datos completos para examen: ${detalleId}, paciente: ${pacienteId}`);
-
-    const detalle = await ExamenPacienteDetalle.findByPk(detalleId, {
-      include: [
-        {
-          model: ExamenPaciente,
-          as: 'Cabecera',
-          where: { pacienteId },
-          include: [{ 
-            model: Paciente, 
-            as: 'Paciente' 
-          }]
-        },
-        {
-          model: Examen,
-          as: 'Examen',
-          include: [{ 
-            model: Area, 
-            as: 'Area' 
-          }]
-        }
-      ]
-    });
-
-    if (!detalle) {
-      return res.status(404).json({ 
-        message: 'Examen no encontrado' 
-      });
-    }
-
-    res.json({
-      paciente: detalle.Cabecera?.Paciente,
-      examen: detalle.Examen,
-      resultados: detalle.resultados,
-      plantilla: detalle.parametrosResultados,
-      laboratorista: detalle.Laboratorista
-    });
-
-  } catch (error) {
-    console.error('❌ Error obteniendo datos completos:', error);
-    res.status(500).json({ 
-      message: 'Error interno', 
-      error: error.message 
-    });
-  }
-}; // ✅ CORREGIDO: Este cierre estaba faltando
 
 /* ===========================================================
    🔵 9. VERIFICAR ESTADO PDF ESPECÍFICO - NUEVO MÉTODO
@@ -584,7 +381,7 @@ exports.verificarEstadoPdf = async (req, res) => {
           attributes: ['id','nombre']
         }
       ],
-      attributes: ['id', 'estado', 'pdfGenerado', 'fechaGeneracionPdf']
+      attributes: ['id', 'estado', 'fechaGeneracionPdf']
     });
 
     if (!detalle) {
@@ -598,8 +395,7 @@ exports.verificarEstadoPdf = async (req, res) => {
                   (orden.estadoPago === 'parcial' && Number(orden.saldoPendiente) === 0);
 
     const puedeDescargar = pagoOk && 
-                          detalle.estado === "completado" && 
-                          detalle.pdfGenerado !== null;
+                          detalle.estado === "completado";
 
     return res.json({
       examenId: detalle.id,
@@ -608,14 +404,11 @@ exports.verificarEstadoPdf = async (req, res) => {
       estadoExamen: detalle.estado,
       pagoOk,
       completado: detalle.estado === "completado",
-      tienePdf: detalle.pdfGenerado !== null,
-      pdfSize: detalle.pdfGenerado?.length || 0,
       fechaGeneracionPdf: detalle.fechaGeneracionPdf,
       puedeDescargar,
       condiciones: {
         pagoRequerido: pagoOk,
         examenCompletado: detalle.estado === "completado",
-        pdfGenerado: detalle.pdfGenerado !== null
       }
     });
 
@@ -627,3 +420,81 @@ exports.verificarEstadoPdf = async (req, res) => {
     });
   }
 };
+
+
+
+exports.obtenerDatosExamenCompleto = async (req, res) => {
+  try {
+    const { detalleId } = req.params;
+    const pacienteId = req.usuario?.id;
+
+    const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId, {
+      include: [
+        {
+          model: db.ExamenPaciente,
+          as: 'Cabecera',
+          ...(pacienteId ? { where: { pacienteId } } : {}),
+          include: [
+            { model: db.Paciente, as: 'Paciente' }
+          ]
+        },
+        {
+          model: db.Examen,
+          as: 'Examen',
+          required: false,
+          include: [{ model: db.Area, as: 'Area', required: false }]
+        },
+        {
+          model: db.Subexamen,
+          as: 'Subexamen',
+          required: false,
+          include: [
+            {
+              model: db.Examen,
+              as: 'Examen',
+              required: false,
+              include: [{ model: db.Area, as: 'Area', required: false }]
+            }
+          ]
+        },
+        {
+          model: db.Laboratorista,
+          as: 'Laboratorista',
+          attributes: ['id','nombres','apellidos'],
+          required: false
+        }
+      ]
+    });
+
+    if (!detalle) return res.status(404).json({ message: 'Examen no encontrado' });
+
+    const safeParse = (v) => {
+      if (!v) return null;
+      if (typeof v === 'object') return v;
+      if (typeof v === 'string') { try { return JSON.parse(v); } catch { return v; } }
+      return v;
+    };
+
+    const resultados = safeParse(detalle.resultados) || {};
+    const plantillaDetalle  = safeParse(detalle.parametrosResultados) || null;
+
+    const examenBase = detalle.Examen || detalle.Subexamen?.Examen || null;
+
+    const plantilla =
+      plantillaDetalle ||
+      safeParse(examenBase?.parametrosResultados) ||
+      safeParse(detalle.Subexamen?.parametrosResultados) ||
+      null;
+
+    return res.json({
+      detalle,      // ✅ LO MÁS IMPORTANTE
+      resultados,
+      plantilla
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo datos completos:', error);
+    res.status(500).json({ message: 'Error interno', error: error.message });
+  }
+};
+

@@ -18,22 +18,52 @@ const path = require('path');
 const { ExamenPaciente, ExamenPacienteDetalle, Examen, Area, Subexamen, Paciente, Laboratorista, Sucursal, Promocion,HistorialResultados } = db;
 
 // 🩺 ASIGNAR EXAMENES A PACIENTE
-// 🩺 ASIGNAR EXAMENES A PACIENTE - VERSIÓN CORREGIDA
 const asignarExamenes = async (req, res) => {
   const t = await db.sequelize.transaction();
+  
   try {
     const pacienteId = req.params.id;
     
-    console.log('🩺 ========== ASIGNACIÓN EXÁMENES ==========');
-    console.log('🔗 PARAMS recibidos:', req.params);
-    console.log('📦 BODY recibido:', JSON.stringify(req.body, null, 2));
-    console.log('👤 USUARIO AUTENTICADO:', req.usuario); // ← AGREGADO PARA DEBUG
-    
-    // ✅ CORREGIDO: Obtener laboratoristaId del usuario autenticado, NO del body
-    const { observaciones, examenes } = req.body;
-    const laboratoristaId = req.usuario.id;
+    console.log('🎯 ========== ASIGNACIÓN DE EXÁMENES ==========');
+    console.log('🔐 USUARIO AUTENTICADO:', {
+      id: req.usuario?.id,
+      tipo: req.usuario?.tipoUsuario,
+      nombres: req.usuario?.nombres,
+      sucursalActual: req.usuario?.sucursalActual
+    });
 
-    // ✅ VALIDACIONES CORREGIDAS
+    if (!req.usuario) {
+      await t.rollback();
+      return res.status(401).json({ 
+        success: false,
+        message: 'No autenticado' 
+      });
+    }
+
+    // ✅ PERMITIR AMBOS ROLES
+    const tiposPermitidos = ['laboratorista', 'administrador', 'superadmin'];
+    
+    if (!tiposPermitidos.includes(req.usuario.tipoUsuario)) {
+      await t.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Solo el personal autorizado puede asignar exámenes'
+      });
+    }
+
+    const usuarioId = parseInt(req.usuario.id);
+    
+    if (isNaN(usuarioId) || usuarioId <= 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'ID de usuario inválido'
+      });
+    }
+
+    const { observaciones, examenes, medicoSolicitante } = req.body;
+
+    // ✅ VALIDACIONES
     if (!Array.isArray(examenes) || examenes.length === 0) {
       await t.rollback();
       return res.status(400).json({ 
@@ -42,83 +72,112 @@ const asignarExamenes = async (req, res) => {
       });
     }
 
-    // ✅ VALIDAR QUE EL USUARIO ESTÉ AUTENTICADO
-    if (!laboratoristaId) {
+    // ✅ VARIABLES PARA REGISTRO
+    let laboratoristaId = null;
+    let sucursalId = null;
+    let sucursalNombre = 'Sin sucursal';
+    let asignadoPor = `${req.usuario.nombres} ${req.usuario.apellidos}`;
+
+    // ✅ SI ES LABORATORISTA
+    if (req.usuario.tipoUsuario === 'laboratorista') {
+      const laboratorista = await Laboratorista.findByPk(usuarioId, {
+        include: [{ 
+          model: Sucursal, 
+          as: 'Sucursal' 
+        }],
+        transaction: t
+      });
+
+      if (!laboratorista) {
+        await t.rollback();
+        return res.status(404).json({ 
+          success: false,
+          message: 'Laboratorista no encontrado' 
+        });
+      }
+
+      laboratoristaId = laboratorista.id;
+      sucursalId = laboratorista.Sucursal?.id || null;
+      sucursalNombre = laboratorista.Sucursal?.nombre || 'Sin sucursal';
+      asignadoPor = `${laboratorista.nombres} ${laboratorista.apellidos}`;
+    } 
+    // ✅ SI ES ADMINISTRADOR
+    else if (req.usuario.tipoUsuario === 'administrador' || req.usuario.tipoUsuario === 'superadmin') {
+      console.log('👨‍💼 Administrador asignando exámenes');
+      
+      // 1. OBTENER SUCURSAL DEL TOKEN
+      if (req.usuario.sucursalActual) {
+        sucursalId = req.usuario.sucursalActual.id;
+        sucursalNombre = req.usuario.sucursalActual.nombre;
+        console.log(`🏢 Usando sucursal del token: ${sucursalNombre}`);
+      } else {
+        // Sucursal por defecto
+        const sucursalDefault = await Sucursal.findOne({
+          order: [['id', 'ASC']],
+          transaction: t
+        });
+        if (sucursalDefault) {
+          sucursalId = sucursalDefault.id;
+          sucursalNombre = sucursalDefault.nombre;
+        }
+      }
+      
+      // 2. BUSCAR LABORATORISTA POR DEFECTO PARA ADMINISTRADORES
+      console.log('🔍 Buscando laboratorista por defecto para administrador...');
+      // controllers/examenes.controller.js - LÍNEA 127 (aproximadamente)
+const laboratoristaDefault = await Laboratorista.findOne({
+  where: { activo: true }, // ✅ CAMBIAR "estado" por "activo"
+  order: [['id', 'ASC']],
+  transaction: t
+});
+      
+      if (laboratoristaDefault) {
+        laboratoristaId = laboratoristaDefault.id;
+        console.log(`👨‍🔬 Laboratorista por defecto asignado: ${laboratoristaDefault.nombres}`);
+      } else {
+        // Si no hay laboratoristas, crear uno ficticio o usar ID 1
+        console.warn('⚠️ No se encontraron laboratoristas en el sistema');
+        // laboratoristaId = 1; // Descomentar si tienes un laboratorista con ID 1
+      }
+    }
+
+    // ✅ VALIDAR QUE TENGA SUCURSAL
+    if (!sucursalId) {
       await t.rollback();
-      return res.status(401).json({ 
+      return res.status(400).json({
         success: false,
-        message: 'No se pudo identificar al laboratorista. Verifique que esté logueado correctamente.' 
+        message: 'No se pudo determinar la sucursal'
       });
     }
 
-    console.log('🎯 LABORATORISTA_ID (desde usuario autenticado):', laboratoristaId);
-    console.log('📊 CANTIDAD EXAMENES:', examenes.length);
-
-    // ✅ VERIFICAR DATOS DE EXAMENES
-    console.log('🔍 ANALIZANDO DATOS DE EXAMENES RECIBIDOS:');
-    examenes.forEach((examen, index) => {
-      console.log(`   Examen ${index + 1}:`, {
-        nombre: examen.nombreExamen || examen.nombre,
-        examenId: examen.examenId,
-        esSubexamen: examen.esSubexamen,
-        precioOriginal: examen.precioOriginal,
-        precioFinal: examen.precioFinal,
-        descuentoAplicado: examen.descuentoAplicado,
-        conPromocion: examen.conPromocion,
-        promocionId: examen.promocionId
-      });
+    console.log('✅ CONFIGURACIÓN FINAL:', {
+      laboratoristaId,
+      sucursalId,
+      sucursalNombre,
+      asignadoPor,
+      tipoUsuario: req.usuario.tipoUsuario
     });
 
-    // ✅ OBTENER LABORATORISTA CON SUCURSAL
-    const laboratorista = await Laboratorista.findByPk(laboratoristaId, {
-      include: [{ 
-        model: Sucursal, 
-        as: 'Sucursal',
-        attributes: ['id', 'nombre'] 
-      }],
-      transaction: t
-    });
-
-    if (!laboratorista) {
-      await t.rollback();
-      return res.status(404).json({ 
-        success: false,
-        message: 'Laboratorista no encontrado' 
-      });
-    }
-
-    console.log('🏥 SUCURSAL DEL LABORATORISTA:', laboratorista.Sucursal?.nombre);
-    console.log('👤 NOMBRE DEL LABORATORISTA:', `${laboratorista.nombres} ${laboratorista.apellidos}`);
-
-    // ✅ CALCULAR PRECIOS TOTALES
+    // ✅ CALCULAR PRECIOS
     let totalCalculado = 0;
     let descuentoTotalGrupo = 0;
 
-    console.log('💰 CALCULANDO PRECIOS TOTALES...');
-    
     for (const examenData of examenes) {
       const calculoPrecios = calcularPreciosExamenCorregido(examenData);
       totalCalculado += calculoPrecios.precioFinal;
       descuentoTotalGrupo += calculoPrecios.descuentoAplicado;
-      
-      console.log(`   📊 "${examenData.nombreExamen}":`, {
-        precioFinal: calculoPrecios.precioFinal,
-        descuento: calculoPrecios.descuentoAplicado,
-        acumuladoTotal: totalCalculado
-      });
     }
 
-    console.log('💰 RESUMEN FINANCIERO GRUPAL:', {
-      totalCalculado: totalCalculado,
-      descuentoTotal: descuentoTotalGrupo,
-      cantidadExamenes: examenes.length
-    });
-
-    // 1) CREAR CABECERA CON PRECIOS CORRECTOS
+    // ✅ CREAR CABECERA CON CAMPOS NUEVOS
     const cabecera = await ExamenPaciente.create({
       pacienteId,
-      laboratoristaId,
-      sucursalId: laboratorista.Sucursal?.id || null,
+      // ✅ CAMPOS PARA RASTREO COMPLETO
+      usuarioAsignadorId: usuarioId,
+      tipoUsuarioAsignador: req.usuario.tipoUsuario,
+      asignadoPor: asignadoPor,
+      // ✅ CAMPOS EXISTENTES (laboratoristaId puede ser null)
+      laboratoristaId: laboratoristaId,
+      sucursalId: sucursalId,
       observaciones: observaciones || '',
       cantidadExamenes: examenes.length,
       estadoPago: 'pendiente',
@@ -126,171 +185,98 @@ const asignarExamenes = async (req, res) => {
       total: totalCalculado,
       saldoPendiente: totalCalculado,
       fechaAsignacion: new Date(),
-      medicoSolicitante: req.body.medicoSolicitante || null
-    }, { transaction: t });
-
-    console.log('✅ CABECERA CREADA CON PRECIOS:', {
-      id: cabecera.id,
-      pacienteId: cabecera.pacienteId,
-      laboratoristaId: cabecera.laboratoristaId,
-      sucursalId: cabecera.sucursalId,
-      total: cabecera.total,
-      saldoPendiente: cabecera.saldoPendiente,
-      cantidadExamenes: cabecera.cantidadExamenes
+      medicoSolicitante: medicoSolicitante || null
+    }, { 
+      transaction: t,
+      // ✅ IGNORAR VALIDACIÓN DE laboratoristaId SI ES NULL
+      // validate: laboratoristaId !== null // Opcional
     });
 
-    // 2) PROCESAR DETALLES CON CÁLCULOS CORRECTOS
-    const detallesLimpios = [];
-    let contadorDetalles = 0;
+    console.log('✅ CABECERA CREADA:', {
+      id: cabecera.id,
+      laboratoristaId: cabecera.laboratoristaId,
+      usuarioAsignadorId: cabecera.usuarioAsignadorId,
+      tipoUsuarioAsignador: cabecera.tipoUsuarioAsignador
+    });
 
-    console.log(`🔍 Procesando ${examenes.length} exámenes para detalles...`);
-    
-    for (const examenData of examenes) {
-      console.log('💰 Procesando examen para detalle:', {
-        nombre: examenData.nombreExamen || examenData.nombre,
-        examenId: examenData.examenId,
-        esSubexamen: examenData.esSubexamen,
-        precioOriginal: examenData.precioOriginal,
-        precioFinal: examenData.precioFinal,
-        descuentoAplicado: examenData.descuentoAplicado
-      });
-
-      // ✅ CALCULAR PRECIOS CORRECTAMENTE
+    // ✅ PROCESAR DETALLES
+    const detallesLimpios = examenes.map(examenData => {
       const calculoPrecios = calcularPreciosExamenCorregido(examenData);
 
-      // ✅ DETALLE CON TODOS LOS CAMPOS CORREGIDOS - VERSIÓN MEJORADA
-      let detalleNormalizado = {
+      return {
         examenPacienteId: cabecera.id,
         precioAplicado: calculoPrecios.precioAplicado,
         descuentoAplicado: calculoPrecios.descuentoAplicado,
         precioFinal: calculoPrecios.precioFinal,
         estado: 'pendiente',
+        // ✅ INFORMACIÓN DEL ASIGNADOR
+        usuarioRegistroId: usuarioId,
+        tipoUsuarioRegistro: req.usuario.tipoUsuario,
+        registradoPor: asignadoPor,
+        // ✅ DATOS DE SUCURSAL
+        sucursalId: sucursalId,
+        laboratorio: sucursalNombre,
+        // ✅ INFORMACIÓN DEL EXAMEN
+        nombreExamen: (examenData.nombreExamen || 'Examen sin nombre').substring(0, 500),
+        medicoSolicitanteDetalle: medicoSolicitante || null,
+        // ✅ TIPO DE EXAMEN
+        examenId: examenData.esSubexamen ? null : examenData.examenId,
+        subexamenId: examenData.esSubexamen ? examenData.examenId : null,
+        esSubexamen: examenData.esSubexamen || false,
+        // ✅ LABORATORISTA (mismo que cabecera o null)
         laboratoristaId: laboratoristaId,
-        sucursalId: laboratorista.Sucursal?.id || null,
-        laboratorio: laboratorista.Sucursal?.nombre || 'Laboratorio Central',
-        conPromocion: examenData.conPromocion || false,
-        promocionId: examenData.promocionId || null,
-        
-        // ✅ CORREGIDO: Limitar a 255 caracteres
-        nombreExamen: (examenData.nombreExamen || examenData.nombre || 
-                      (examenData.esSubexamen ? examenData.subexamenNombre : examenData.examenNombre) || 
-                      'Examen sin nombre').substring(0, 255),
-
-        // ✅ AGREGADO
-        medicoSolicitanteDetalle: examenData.medicoSolicitante || req.body.medicoSolicitante || null,
-
-        // ✅ INFORMACIÓN DE REGISTRO COMPLETA
-        registradoPor: `${laboratorista.nombres} ${laboratorista.apellidos}`,
+        // ✅ TIMESTAMPS
         fechaRegistro: new Date(),
         horaRegistro: new Date().toTimeString().split(' ')[0],
-        usuarioRegistroId: laboratoristaId,
         createdAt: new Date(),
         updatedAt: new Date()
       };
+    });
 
-      // ✅ ASIGNAR ID CORRECTO SEGÚN TIPO DE EXAMEN
-      if (examenData.esSubexamen) {
-        detalleNormalizado.subexamenId = examenData.examenId;
-        detalleNormalizado.esSubexamen = true;
-        detalleNormalizado.examenId = null;
-      } else {
-        detalleNormalizado.examenId = examenData.examenId;
-        detalleNormalizado.esSubexamen = false;
-        detalleNormalizado.subexamenId = null;
-      }
-
-      detallesLimpios.push(detalleNormalizado);
-      contadorDetalles++;
-
-      console.log(`   ✅ ${examenData.esSubexamen ? 'SUBEXAMEN' : 'EXAMEN'} "${examenData.nombreExamen}":`);
-      console.log(`      Precio Aplicado: $${calculoPrecios.precioAplicado}`);
-      console.log(`      Descuento Aplicado: $${calculoPrecios.descuentoAplicado}`);
-      console.log(`      Precio Final: $${calculoPrecios.precioFinal}`);
-      console.log(`      Con Promoción: ${examenData.conPromocion || false}`);
-      console.log(`      Promoción ID: ${examenData.promocionId || 'null'}`);
-      console.log(`      Tipo: ${examenData.esSubexamen ? 'Subexamen' : 'Examen Principal'}`);
-    }
-
-    // 3) INSERTAR DETALLES EN BD
-    console.log(`📝 Insertando ${detallesLimpios.length} detalles en examen_paciente_detalles...`);
+    // ✅ INSERTAR DETALLES
     const detallesInsertados = await ExamenPacienteDetalle.bulkCreate(detallesLimpios, { 
       transaction: t,
       returning: true
     });
 
-    // 4) VERIFICAR INSERCIÓN
-    console.log(`✅ Detalles insertados correctamente: ${detallesInsertados.length}`);
-    
-    // Verificar los primeros 2 detalles insertados
-    if (detallesInsertados.length > 0) {
-      console.log('🔍 MUESTRA DE DETALLES INSERTADOS:');
-      detallesInsertados.slice(0, 2).forEach((detalle, index) => {
-        console.log(`   Detalle ${index + 1}:`, {
-          id: detalle.id,
-          examenId: detalle.examenId,
-          subexamenId: detalle.subexamenId,
-          precioAplicado: detalle.precioAplicado,
-          descuentoAplicado: detalle.descuentoAplicado,
-          precioFinal: detalle.precioFinal,
-          nombreExamen: detalle.nombreExamen,
-          conPromocion: detalle.conPromocion,
-          promocionId: detalle.promocionId,
-          esSubexamen: detalle.esSubexamen
-        });
-      });
-    }
-
     await t.commit();
     
-    console.log('🎉 ASIGNACIÓN EXITOSA - RESUMEN FINAL:', {
-      cabeceraId: cabecera.id,
-      pacienteId: cabecera.pacienteId,
-      laboratoristaId: cabecera.laboratoristaId,
-      sucursalId: cabecera.sucursalId,
-      cantidadExamenes: cabecera.cantidadExamenes,
-      total: cabecera.total,
-      descuentoTotal: descuentoTotalGrupo,
-      saldoPendiente: cabecera.saldoPendiente,
-      detallesInsertados: detallesInsertados.length,
-      fechaAsignacion: cabecera.fechaAsignacion
-    });
+    console.log('🎉 ASIGNACIÓN COMPLETADA');
     
     return res.status(201).json({
       success: true,
-      message: `Se asignaron ${examenes.length} exámenes correctamente`,
+      message: `Se asignaron ${examenes.length} exámenes correctamente en ${sucursalNombre}`,
       data: {
         cabeceraId: cabecera.id,
         cantidadExamenes: cabecera.cantidadExamenes,
         total: cabecera.total,
-        descuentoTotal: descuentoTotalGrupo,
-        saldoPendiente: cabecera.saldoPendiente,
-        sucursalId: cabecera.sucursalId,
-        laboratoristaId: cabecera.laboratoristaId,
-        detalles: detallesInsertados.map(d => ({
-          id: d.id,
-          nombre: d.nombreExamen,
-          precioFinal: d.precioFinal,
-          descuento: d.descuentoAplicado,
-          conPromocion: d.conPromocion,
-          promocionId: d.promocionId,
-          esSubexamen: d.esSubexamen
-        }))
+        asignadoPor: cabecera.asignadoPor,
+        tipoUsuarioAsignador: cabecera.tipoUsuarioAsignador,
+        sucursalNombre: sucursalNombre
       }
     });
     
   } catch (error) {
     await t.rollback();
     console.error('❌ ERROR EN ASIGNACIÓN:', error);
-    console.error('❌ STACK TRACE:', error.stack);
+    
+    // ✅ ERROR ESPECÍFICO PARA laboratoristaId NULL
+    if (error.name === 'SequelizeValidationError') {
+      const messages = error.errors.map(err => err.message).join(', ');
+      return res.status(400).json({
+        success: false,
+        message: `Error de validación: ${messages}`,
+        suggestion: 'Por favor, asegúrese de que existe al menos un laboratorista activo en el sistema'
+      });
+    }
+    
     return res.status(500).json({ 
       success: false,
       message: 'Error al asignar exámenes', 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 };
-
 // 📊 OBTENER EXAMENES CON ÁREA
 const obtenerExamenesConArea = async (req, res) => {
   try {
@@ -742,107 +728,6 @@ const obtenerInformacionRegistroDetalle = async (req, res) => {
 };
 
 
-// ✅ MÉTODO CORREGIDO PARA GENERAR PDF COMPLETO
-const generarPDFCompleto = async (req, res) => {
-  try {
-    const { paciente, gruposExamenes, estadisticas, fechaGeneracion, titulo } = req.body;
-    
-    console.log('📄 Generando PDF completo para paciente:', paciente?.nombres);
-
-    // Validar datos requeridos
-    if (!paciente || !gruposExamenes) {
-      return res.status(400).json({
-        success: false,
-        mensaje: 'Datos incompletos para generar PDF completo'
-      });
-    }
-
-    // ✅ CORREGIR: Sanitizar nombre del archivo
-    const sanitizeFilename = (filename) => {
-      return filename
-        .replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s_-]/g, '')
-        .replace(/\s+/g, '_')
-        .substring(0, 100);
-    };
-
-    const nombrePaciente = `${paciente.nombres || ''}_${paciente.apellidos || ''}`.trim();
-    const filename = `resumen_examenes_${sanitizeFilename(nombrePaciente)}.pdf`;
-    
-    console.log('📁 Nombre de archivo sanitizado:', filename);
-
-    // ✅ CORREGIR: Configurar headers de manera segura
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Cache-Control': 'no-cache',
-      'Access-Control-Expose-Headers': 'Content-Disposition'
-    });
-
-    // Aquí va tu lógica para generar el PDF completo
-    const PDFDocument = require('pdfkit');
-    const doc = new PDFDocument();
-    
-    // Pipe the PDF to the response
-    doc.pipe(res);
-
-    // Contenido del PDF completo
-    doc.fontSize(20).text(titulo || 'RESUMEN DE EXÁMENES', { align: 'center' });
-    doc.moveDown();
-    doc.fontSize(12).text(`Paciente: ${paciente.nombres} ${paciente.apellidos}`);
-    doc.text(`Cédula: ${paciente.cedula || 'No especificada'}`);
-    doc.text(`Edad: ${paciente.edad || 'No especificada'} | Sexo: ${paciente.sexo || 'No especificado'}`);
-    doc.moveDown();
-
-    // Resumen estadístico
-    if (estadisticas) {
-      doc.fontSize(14).text('RESUMEN ESTADÍSTICO:');
-      doc.text(`Total de exámenes: ${estadisticas.totalExamenes}`);
-      doc.text(`Exámenes listos: ${estadisticas.examenesListos}`);
-      doc.text(`Exámenes pendientes: ${estadisticas.examenesPendientes}`);
-      doc.text(`Total pagado: $${estadisticas.totalPagado || 0}`);
-      doc.text(`Total pendiente: $${estadisticas.totalPendiente || 0}`);
-      doc.moveDown();
-    }
-
-    // Lista de exámenes por grupo/fecha
-    if (gruposExamenes && gruposExamenes.length > 0) {
-      gruposExamenes.forEach((grupo, index) => {
-        doc.fontSize(14).text(`Fecha: ${grupo.fechaStr || grupo.fecha}`);
-        doc.text(`Estado de pago: ${grupo.estadoPago}`);
-        doc.text(`Saldo pendiente: $${grupo.saldoPendiente || 0}`);
-        doc.moveDown(0.5);
-        
-        if (grupo.areas && grupo.areas.length > 0) {
-          grupo.areas.forEach(area => {
-            doc.fontSize(12).text(`Área: ${area.nombre}`, { indent: 20 });
-            if (area.examenes && area.examenes.length > 0) {
-              area.examenes.forEach(examen => {
-                doc.text(`• ${examen.nombre} - ${examen.estado}`, { indent: 40 });
-              });
-            }
-          });
-        }
-        doc.moveDown();
-      });
-    }
-
-    doc.text(`Fecha de generación: ${fechaGeneracion}`);
-    doc.text('Laboratorio Clínico - Sistema de Gestión');
-
-    // Finalizar el PDF
-    doc.end();
-
-  } catch (error) {
-    console.error('❌ Error generando PDF completo:', error);
-    
-    // ✅ ENVIAR ERROR COMO JSON
-    res.status(500).json({
-      success: false,
-      mensaje: 'Error generando PDF completo',
-      error: error.message
-    });
-  }
-};
 
 // ✅ MÉTODO COMPLETAMENTE CORREGIDO PARA GENERAR PDF
 const generarPDFResultados = async (req, res) => {
@@ -1255,15 +1140,19 @@ exports.actualizarResultado = async (req, res) => {
 
     // Registrar en historial
     await HistorialResultados.create({
-      detalleId: detalle.id,
-      laboratoristaId: req.usuario.id,
-      accion: 'edicion',
-      resultadosAnteriores: detalle.resultados,
-      resultadosNuevos: resultado,
-      observacionesAnteriores: detalle.observaciones,
-      observacionesNuevas: observaciones,
-      createdAt: new Date()
-    });
+  examenPacienteDetalleId: detalle.id,   // 👈 CAMBIADO
+  laboratoristaId: req.usuario.id,
+  accion: 'edicion',
+  resultadosAnteriores: detalle.resultados,
+  resultadosNuevos: resultado,
+  observacionesAnteriores: detalle.observaciones,
+  observacionesNuevas: observaciones,
+  cambios: JSON.stringify(
+    compararResultados(detalle.resultados, resultado)
+  ),
+  createdAt: new Date()
+});
+
 
     console.log('✅ Registro de historial creado');
 
@@ -1315,144 +1204,6 @@ exports.actualizarResultado = async (req, res) => {
 };
 
 
-// En examenes.controller.js - AGREGAR función para guardar PDF
-exports.guardarPdfGenerado = async (req, res) => {
-  try {
-    const { detalleId, pdfBuffer } = req.body;
-    
-    console.log(`💾 Guardando PDF en base de datos para detalle: ${detalleId}`);
-    console.log(`📏 Tamaño del PDF: ${pdfBuffer?.length || 0} bytes`);
-
-    if (!detalleId || !pdfBuffer) {
-      return res.status(400).json({ 
-        message: 'Faltan datos requeridos: detalleId y pdfBuffer' 
-      });
-    }
-
-    // Buscar el detalle
-    const detalle = await ExamenPacienteDetalle.findByPk(detalleId);
-    
-    if (!detalle) {
-      return res.status(404).json({ message: 'Detalle de examen no encontrado' });
-    }
-
-    // Verificar que el examen esté completado
-    if (detalle.estado !== 'completado') {
-      return res.status(400).json({ 
-        message: 'El examen no está completado, no se puede guardar PDF' 
-      });
-    }
-
-    // Convertir el buffer (si viene como array) a Buffer
-    let pdfData;
-    if (Array.isArray(pdfBuffer)) {
-      pdfData = Buffer.from(pdfBuffer);
-    } else if (typeof pdfBuffer === 'string') {
-      pdfData = Buffer.from(pdfBuffer, 'base64');
-    } else {
-      pdfData = pdfBuffer;
-    }
-
-    // Actualizar el detalle con el PDF
-    await detalle.update({
-      pdfGenerado: pdfData,
-      fechaGeneracionPdf: new Date(),
-      pdfPendiente: false // Ya no está pendiente
-    });
-
-    console.log(`✅ PDF guardado exitosamente para detalle ${detalleId}`);
-    console.log(`📊 Tamaño final en BD: ${pdfData.length} bytes`);
-
-    res.json({
-      message: 'PDF guardado correctamente en la base de datos',
-      detalleId: detalleId,
-      tamañoPdf: pdfData.length,
-      fechaGeneracion: new Date()
-    });
-
-  } catch (error) {
-    console.error('❌ Error guardando PDF en base de datos:', error);
-    res.status(500).json({ 
-      message: 'Error guardando PDF', 
-      error: error.message 
-    });
-  }
-};
-
-// En examenes.controller.js - AGREGAR función para verificar PDF
-exports.verificarEstadoPdf = async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    console.log(`🔍 Verificando estado de PDF para detalle: ${id}`);
-
-    const detalle = await ExamenPacienteDetalle.findByPk(id, {
-      attributes: ['id', 'estado', 'pdfGenerado', 'fechaGeneracionPdf', 'pdfPendiente']
-    });
-
-    if (!detalle) {
-      return res.status(404).json({ message: 'Detalle no encontrado' });
-    }
-
-    const respuesta = {
-      detalleId: detalle.id,
-      estado: detalle.estado,
-      tienePdf: !!detalle.pdfGenerado,
-      pdfPendiente: detalle.pdfPendiente || false,
-      fechaGeneracionPdf: detalle.fechaGeneracionPdf,
-      tamañoPdf: detalle.pdfGenerado ? detalle.pdfGenerado.length : 0
-    };
-
-    console.log(`📊 Estado PDF para detalle ${id}:`, respuesta);
-
-    res.json(respuesta);
-
-  } catch (error) {
-    console.error('❌ Error verificando estado PDF:', error);
-    res.status(500).json({ 
-      message: 'Error verificando estado PDF', 
-      error: error.message 
-    });
-  }
-};
-
-
-// 🔍 VERIFICAR ESTADO DE PDF
-const verificarEstadoPdf = async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    console.log(`🔍 Verificando estado de PDF para detalle: ${id}`);
-
-    const detalle = await ExamenPacienteDetalle.findByPk(id, {
-      attributes: ['id', 'estado', 'pdfGenerado', 'fechaGeneracionPdf', 'pdfPendiente']
-    });
-
-    if (!detalle) {
-      return res.status(404).json({ message: 'Detalle no encontrado' });
-    }
-
-    const respuesta = {
-      detalleId: detalle.id,
-      estado: detalle.estado,
-      tienePdf: !!detalle.pdfGenerado,
-      pdfPendiente: detalle.pdfPendiente || false,
-      fechaGeneracionPdf: detalle.fechaGeneracionPdf,
-      tamañoPdf: detalle.pdfGenerado ? detalle.pdfGenerado.length : 0
-    };
-
-    console.log(`📊 Estado PDF para detalle ${id}:`, respuesta);
-
-    res.json(respuesta);
-
-  } catch (error) {
-    console.error('❌ Error verificando estado PDF:', error);
-    res.status(500).json({ 
-      message: 'Error verificando estado PDF', 
-      error: error.message 
-    });
-  }
-};
 
 
 
@@ -1792,7 +1543,7 @@ const obtenerResumenExamenesPaciente = async (req, res) => {
         {
           model: db.ExamenPacienteDetalle,
           as: 'Detalles',
-          attributes: ['id', 'nombreExamen', 'precioFinal', 'estado', 'esSubexamen', 'examenId', 'subexamenId', 'resultados', 'observaciones', 'fechaRealizacion', 'pdfPendiente', 'pdfGenerado'],
+          attributes: ['id', 'nombreExamen', 'precioFinal', 'estado', 'esSubexamen', 'examenId', 'subexamenId', 'resultados', 'observaciones', 'fechaRealizacion'],
           required: false,
           include: [
             { 
@@ -1821,60 +1572,6 @@ const obtenerResumenExamenesPaciente = async (req, res) => {
 
     console.log(`✅ Se encontraron ${examenes.length} registros para el paciente`);
 
-    // ✅ FUNCIONES AUXILIARES PARA DETECTAR RESULTADOS - DEFINIR ANTES DE USARLAS
-    const tieneResultadosValidos = (detalle) => {
-      if (!detalle) return false;
-      
-      // Verificar si hay resultados en diferentes propiedades
-      if (detalle.resultados && typeof detalle.resultados === 'object') {
-        const resultadoObj = detalle.resultados;
-        return Object.keys(resultadoObj).some(key => 
-          resultadoObj[key] !== null && 
-          resultadoObj[key] !== undefined && 
-          resultadoObj[key] !== ''
-        );
-      }
-      
-      // Verificar si hay resultados en propiedades directas
-      if (detalle.resultado && detalle.resultado.trim() !== '') return true;
-      if (detalle.parametrosResultados && Object.keys(detalle.parametrosResultados).length > 0) return true;
-      
-      return false;
-    };
-
-    const obtenerResultados = (detalle) => {
-      if (!detalle) return {};
-      
-      // Si ya hay un objeto de resultados, usarlo
-      if (detalle.resultados && typeof detalle.resultados === 'object') {
-        return detalle.resultados;
-      }
-      
-      // Construir objeto de resultados desde propiedades individuales
-      const resultados = {};
-      
-      if (detalle.resultado) resultados.resultado = detalle.resultado;
-      if (detalle.metodo) resultados.metodo = detalle.metodo;
-      if (detalle.observaciones) resultados.observaciones = detalle.observaciones;
-      if (detalle.parametrosResultados) resultados.parametros = detalle.parametrosResultados;
-      
-      return resultados;
-    };
-
-    const puedeGenerarPDF = (detalle) => {
-      if (!detalle) return false;
-      
-      // ✅ LÓGICA MEJORADA PARA DETERMINAR SI PUEDE GENERAR PDF
-      const tieneResultados = tieneResultadosValidos(detalle);
-      const pdfPendiente = detalle.pdfPendiente === true;
-      const pdfGenerado = detalle.pdfGenerado === true;
-      
-      // Puede generar PDF si:
-      // 1. Tiene resultados válidos Y
-      // 2. No tiene PDF generado O está marcado como pendiente
-      return tieneResultados && (!pdfGenerado || pdfPendiente);
-    };
-
     // ✅ PROCESAMIENTO SEGURO CON DETECCIÓN DE RESULTADOS
     const resumen = examenes.map(examen => {
       const detallesProcesados = (examen.Detalles || []).map(detalle => {
@@ -1891,7 +1588,6 @@ const obtenerResumenExamenesPaciente = async (req, res) => {
         // ✅ USAR FUNCIONES AUXILIARES PARA DETECTAR RESULTADOS (AHORA DEFINIDAS)
         const tieneResultados = tieneResultadosValidos(detalle);
         const resultados = obtenerResultados(detalle);
-        const puedeGenPDF = puedeGenerarPDF(detalle); // ✅ Variable renombrada para evitar conflicto
 
         return {
           id: detalle.id,
@@ -1901,11 +1597,10 @@ const obtenerResumenExamenesPaciente = async (req, res) => {
           tipo: detalle.esSubexamen ? 'subexamen' : 'examen',
           resultados: resultados,
           tieneResultados: tieneResultados,
-          puedeGenerarPDF: puedeGenPDF, // ✅ Usar variable local
+          
           observaciones: detalle.observaciones,
           fechaRealizacion: detalle.fechaRealizacion,
-          pdfPendiente: detalle.pdfPendiente || false,
-          tienePDF: !!detalle.pdfGenerado
+          
         };
       });
 
@@ -3204,103 +2899,6 @@ const generarPdfAutomatico = async (req, res) => {
 
 
 
-// ✅ MÉTODO CORREGIDO PARA GUARDAR PDF
-const guardarPdfGenerado = async (req, res) => {
-  try {
-    const { detalleId, pdfBuffer, paciente, examen, resultados } = req.body;
-    
-    console.log(`💾 GUARDAR PDF - Detalle: ${detalleId}`, {
-      paciente: paciente?.nombres,
-      examen: examen?.nombre,
-      tamañoBuffer: pdfBuffer?.length
-    });
-
-    if (!detalleId || !pdfBuffer) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'detalleId y pdfBuffer son requeridos' 
-      });
-    }
-
-    // Buscar el detalle
-    const detalle = await ExamenPacienteDetalle.findByPk(detalleId);
-    
-    if (!detalle) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'Detalle de examen no encontrado' 
-      });
-    }
-
-    // Convertir buffer correctamente
-    let pdfData;
-    if (Array.isArray(pdfBuffer)) {
-      pdfData = Buffer.from(pdfBuffer);
-    } else if (typeof pdfBuffer === 'string') {
-      pdfData = Buffer.from(pdfBuffer, 'base64');
-    } else {
-      pdfData = pdfBuffer;
-    }
-
-    // ✅ VERIFICAR QUE EL PDF NO ESTÉ VACÍO
-    if (!pdfData || pdfData.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'El PDF está vacío o corrupto'
-      });
-    }
-
-    console.log(`📊 PDF a guardar - Tamaño: ${pdfData.length} bytes`);
-
-    // ✅ ACTUALIZAR CON TODOS LOS CAMPOS NECESARIOS
-    const updateData = {
-      pdfGenerado: pdfData,
-      fechaGeneracionPdf: new Date(),
-      pdfPendiente: false,
-      estado: 'completado' // Asegurar que esté completado
-    };
-
-    // Si hay resultados, guardarlos también
-    if (resultados) {
-      updateData.resultados = resultados;
-    }
-
-    await detalle.update(updateData);
-
-    console.log(`✅ PDF GUARDADO EXITOSAMENTE en BD para detalle ${detalleId}`);
-
-    // Verificar que se guardó correctamente
-    const detalleActualizado = await ExamenPacienteDetalle.findByPk(detalleId, {
-      attributes: ['id', 'pdfGenerado', 'fechaGeneracionPdf', 'estado']
-    });
-
-    console.log(`📋 VERIFICACIÓN:`, {
-      tienePdf: !!detalleActualizado.pdfGenerado,
-      tamañoPdf: detalleActualizado.pdfGenerado?.length || 0,
-      estado: detalleActualizado.estado
-    });
-
-    res.json({
-      success: true,
-      message: 'PDF guardado correctamente',
-      data: {
-        detalleId: detalle.id,
-        tienePdf: true,
-        tamañoPdf: pdfData.length,
-        fechaGeneracion: new Date()
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ ERROR GUARDANDO PDF:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error guardando PDF', 
-      error: error.message 
-    });
-  }
-};
-
 // ✅ FUNCIÓN PARA FORZAR GENERACIÓN DE PDF
 const forzarGeneracionPdf = async (req, res) => {
   try {
@@ -3618,6 +3216,777 @@ const actualizarResultadoExamen = async (req, res) => {
   }
 };
 
+// ✅ MÉTODO PARA OBTENER TODOS LOS EXAMENES PENDIENTES CON FILTROS
+const getExamenesPendientes = async (req, res) => {
+  try {
+    const { 
+      sucursal, 
+      usuario, 
+      estado = 'pendiente',
+      fechaDesde,
+      fechaHasta,
+      orden = 'fechaRegistro',
+      direccion = 'DESC'
+    } = req.query;
+
+    console.log('🔍 FILTROS SOLICITADOS:', {
+      sucursal,
+      usuario,
+      estado,
+      fechaDesde,
+      fechaHasta,
+      orden,
+      direccion
+    });
+
+    const whereClause = {};
+    
+    // ✅ Filtrar por estado (pendiente, en_proceso, completado, todos)
+    if (estado && estado !== 'todos') {
+      whereClause.estado = estado;
+    }
+
+    // ✅ Filtrar por sucursal (usando sucursalId de ExamenPacienteDetalle)
+    if (sucursal && sucursal !== '0' && sucursal !== 'todos') {
+      whereClause.sucursalId = parseInt(sucursal);
+    }
+
+    // ✅ Filtrar por usuario que registró (registradoPor o asignadoPor)
+    if (usuario && usuario.trim() !== '') {
+      whereClause[Op.or] = [
+        { registradoPor: { [Op.like]: `%${usuario}%` } },
+        { '$Cabecera.asignadoPor$': { [Op.like]: `%${usuario}%` } }
+      ];
+    }
+
+    // ✅ Filtrar por rango de fechas (fechaRegistro o createdAt)
+    if (fechaDesde || fechaHasta) {
+      whereClause[Op.or] = [
+        { fechaRegistro: {} },
+        { createdAt: {} }
+      ];
+      
+      if (fechaDesde) {
+        const fechaDesdeObj = new Date(fechaDesde);
+        fechaDesdeObj.setHours(0, 0, 0, 0);
+        
+        if (whereClause[Op.or][0].fechaRegistro) {
+          whereClause[Op.or][0].fechaRegistro[Op.gte] = fechaDesdeObj;
+        }
+        if (whereClause[Op.or][1].createdAt) {
+          whereClause[Op.or][1].createdAt[Op.gte] = fechaDesdeObj;
+        }
+      }
+      
+      if (fechaHasta) {
+        const fechaHastaObj = new Date(fechaHasta);
+        fechaHastaObj.setHours(23, 59, 59, 999);
+        
+        if (whereClause[Op.or][0].fechaRegistro) {
+          whereClause[Op.or][0].fechaRegistro[Op.lte] = fechaHastaObj;
+        }
+        if (whereClause[Op.or][1].createdAt) {
+          whereClause[Op.or][1].createdAt[Op.lte] = fechaHastaObj;
+        }
+      }
+    }
+
+    console.log('🔧 WHERE CLAUSE GENERADO:', JSON.stringify(whereClause, null, 2));
+
+    // ✅ Construir opciones de ordenamiento
+    let orderClause;
+    switch (orden) {
+      case 'paciente':
+        orderClause = [[{ model: db.ExamenPaciente, as: 'Cabecera' }, { model: db.Paciente, as: 'Paciente' }, 'nombres', direccion]];
+        break;
+      case 'usuarioAsignador':
+        orderClause = [[{ model: db.ExamenPaciente, as: 'Cabecera' }, 'asignadoPor', direccion]];
+        break;
+      case 'sucursal':
+        orderClause = [[{ model: db.Sucursal, as: 'Sucursal' }, 'nombre', direccion]];
+        break;
+      case 'horaRegistro':
+        orderClause = [['horaRegistro', direccion]];
+        break;
+      case 'fechaRegistro':
+      default:
+        orderClause = [['fechaRegistro', direccion], ['createdAt', direccion]];
+        break;
+    }
+
+    // ✅ Consulta principal con todas las relaciones necesarias
+    const examenes = await db.ExamenPacienteDetalle.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: db.ExamenPaciente,
+          as: 'Cabecera',
+          include: [
+            {
+              model: db.Paciente,
+              as: 'Paciente',
+              attributes: ['id', 'nombres', 'apellidos', 'cedula', 'telefono']
+            }
+          ]
+        },
+        {
+          model: db.Sucursal,
+          as: 'Sucursal',
+          attributes: ['id', 'nombre', 'direccion']
+        },
+        {
+          model: db.Laboratorista,
+          as: 'Laboratorista',
+          attributes: ['id', 'nombres', 'apellidos', 'usuario']
+        },
+        {
+          model: db.Examen,
+          as: 'Examen',
+          attributes: ['id', 'nombre', 'descripcion']
+        },
+        {
+          model: db.Subexamen,
+          as: 'Subexamen',
+          attributes: ['id', 'nombre', 'descripcion'],
+          include: [{
+            model: db.Examen,
+            as: 'Examen',
+            attributes: ['nombre']
+          }]
+        }
+      ],
+      order: orderClause,
+      limit: 200 // ✅ Aumentado para más resultados
+    });
+
+    console.log(`✅ Se encontraron ${examenes.length} exámenes con los filtros aplicados`);
+
+    // ✅ Procesar resultados para el frontend
+    const examenesProcesados = examenes.map(examen => ({
+      // IDs
+      detalleId: examen.id,
+      examenPacienteId: examen.examenPacienteId,
+      pacienteId: examen.Cabecera?.Paciente?.id,
+      
+      // Información del examen
+      nombre: examen.nombreExamen || 
+             (examen.Examen?.nombre) || 
+             (examen.Subexamen?.nombre) || 
+             'Examen sin nombre',
+      estado: examen.estado || 'pendiente',
+      
+      // Información del paciente
+      paciente: examen.Cabecera?.Paciente ? 
+               `${examen.Cabecera.Paciente.nombres || ''} ${examen.Cabecera.Paciente.apellidos || ''}`.trim() : 
+               'Paciente no disponible',
+      cedula: examen.Cabecera?.Paciente?.cedula || '',
+      telefono: examen.Cabecera?.Paciente?.telefono || '',
+      
+      // Información del usuario que registró
+      usuarioAsignador: examen.registradoPor || 
+                       examen.Cabecera?.asignadoPor || 
+                       (examen.Laboratorista ? 
+                         `${examen.Laboratorista.nombres} ${examen.Laboratorista.apellidos}` : 
+                         'No especificado'),
+      usuarioId: examen.Cabecera?.usuarioAsignadorId || examen.laboratoristaId,
+      tipoUsuario: examen.Cabecera?.tipoUsuarioAsignador || 'laboratorista',
+      
+      // Información de sucursal
+      sucursal: examen.Sucursal?.nombre || 'Sin sucursal',
+      sucursalId: examen.sucursalId,
+      
+      // Fechas y horas
+      fechaAsignacion: examen.Cabecera?.fechaAsignacion,
+      fechaRegistro: examen.fechaRegistro || examen.createdAt,
+      horaRegistro: examen.horaRegistro || 
+                   (examen.createdAt ? 
+                     examen.createdAt.toTimeString().split(' ')[0] : 
+                     '00:00:00'),
+      laboratorio: examen.laboratorio || 'Laboratorio Central',
+      
+      // Datos adicionales
+      medicoSolicitante: examen.medicoSolicitanteDetalle || examen.Cabecera?.medicoSolicitante || '',
+      observaciones: examen.observaciones || '',
+      resultados: examen.resultados,
+      precioFinal: examen.precioFinal || 0
+    }));
+
+    res.json({
+      success: true,
+      data: examenesProcesados,
+      total: examenesProcesados.length,
+      filtrosAplicados: {
+        sucursal: sucursal || 'Todas',
+        usuario: usuario || 'Todos',
+        estado: estado || 'Todos',
+        fechaDesde,
+        fechaHasta,
+        orden,
+        direccion
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo exámenes pendientes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener exámenes pendientes',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Error interno'
+    });
+  }
+};
+
+
+// ✅ MÉTODO PARA OBTENER LISTA DE SUCURSALES (para el filtro)
+const getSucursales = async (req, res) => {
+  try {
+    const sucursales = await db.Sucursal.findAll({
+      attributes: ['id', 'nombre', 'direccion', 'telefono', 'activo'],
+      where: { activo: true },
+      order: [['nombre', 'ASC']]
+    });
+
+    res.json({
+      success: true,
+      data: sucursales,
+      total: sucursales.length
+    });
+  } catch (error) {
+    console.error('❌ Error obteniendo sucursales:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener sucursales'
+    });
+  }
+};
+
+
+const obtenerDetalleExamen = async (req, res) => {
+  try {
+    const { detalleId } = req.params;
+
+    const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId, {
+      include: [
+        { model: db.ExamenPaciente, as: 'Cabecera' },
+        { model: db.Examen, as: 'Examen', include: [{ model: db.Area, as: 'Area', required: false }], required: false },
+        { model: db.Subexamen, as: 'Subexamen', required: false },
+        { model: db.Sucursal, as: 'Sucursal', required: false },
+        { model: db.Laboratorista, as: 'Laboratorista', required: false }
+      ]
+    });
+
+    if (!detalle) {
+      return res.status(404).json({ success: false, message: 'Detalle no encontrado' });
+    }
+
+    // ✅ Nombre examen
+    const nombre =
+      detalle.nombreExamen ||
+      detalle.Examen?.nombre ||
+      detalle.Subexamen?.nombre ||
+      'Examen';
+
+    // ✅ Área (puede venir del Examen -> Area)
+    const area =
+      detalle.Examen?.Area?.nombre ||
+      detalle.Examen?.area?.nombre || // por si tu Area se llama distinto
+      'No especificado';
+
+    // ✅ Precio real: usa precioFinal o precioAplicado (TU MODELO SÍ TIENE)
+    const precio =
+      Number(detalle.precioFinal ?? detalle.precioAplicado ?? 0);
+
+    return res.json({
+  success: true,
+  data: {
+    // ===============================
+    // DATOS PRINCIPALES
+    // ===============================
+    nombre: detalle.nombreExamen,
+    area: detalle.Examen?.Area?.nombre || 'No especificado',
+
+    // 👇 AQUÍ ESTÁ TU PRECIO REAL
+    precio: Number(detalle.precioFinal || detalle.precioAplicado || 0),
+
+    estado: detalle.estado || 'pendiente',
+    estadoPago: detalle.Cabecera?.estadoPago || 'pendiente',
+    saldoPendiente: detalle.Cabecera?.saldoPendiente || 0,
+
+    // ===============================
+    // INFORMACIÓN TÉCNICA
+    // (si no existe en BD → No especificado)
+    // ===============================
+    informacionTecnica: {
+      tipoMuestra: detalle.Examen?.tipoMuestra || 'No especificado',
+      horaEntrega: detalle.Examen?.horaEntrega || 'No especificado',
+      tipoTubo: detalle.Examen?.tipoTubo || 'No especificado',
+      metodo: detalle.Examen?.metodo || 'No especificado',
+      detallesEspecificos: detalle.Examen?.observaciones || 'No especificado'
+    },
+
+    // ===============================
+    // INFORMACIÓN DE REGISTRO
+    // (ESTO SÍ ESTÁ EN TU MODELO)
+    // ===============================
+    informacionRegistro: {
+      registradoPor: detalle.registradoPor || 'No especificado',
+      fechaRegistro: detalle.fechaRegistro || 'No especificado',
+      horaRegistro: detalle.horaRegistro || 'No especificado',
+      laboratorio: detalle.laboratorio || 'No especificado'
+    }
+  }
+});
+
+
+  } catch (error) {
+    console.error('❌ Error obtenerDetalleExamen:', error);
+    res.status(500).json({ success: false, message: 'Error interno del servidor' });
+  }
+};
+
+
+
+
+
+// ✅ DETALLE COMPLETO PARA PDF (AREA + EXAMEN/SUBEXAMEN + LABORATORISTA + PACIENTE)
+// ✅ DETALLE COMPLETO PARA PDF (PACIENTE + MEDICO + LABORATORISTA + AREA + EXAMEN/SUBEXAMEN)
+
+// ✅ DETALLE COMPLETO PARA PDF (PACIENTE + MEDICO + LABORATORISTA + AREA + EXAMEN/SUBEXAMEN)
+async function getDetalleParaPdf(req, res) {
+  try {
+    const detalleId = req.params.detalleId || req.params.id;
+
+    console.log('📄 getDetalleParaPdf -> detalleId:', detalleId);
+
+    const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId, {
+      include: [
+        // =========================
+        // CABECERA + PACIENTE + LAB (cabecera)
+        // =========================
+        {
+          model: db.ExamenPaciente,
+          as: 'Cabecera', // ⚠️ Debe existir este alias en tu associate
+          attributes: ['id', 'fechaAsignacion', 'estadoPago', 'total', 'saldoPendiente', 'medicoSolicitante', 'asignadoPor'],
+          required: false,
+          include: [
+            {
+              model: db.Paciente,
+              as: 'Paciente',
+              attributes: ['id', 'nombres', 'apellidos', 'cedula', 'edad', 'sexo'],
+              required: false
+            },
+            {
+              model: db.Laboratorista,
+              as: 'Laboratorista',
+              attributes: ['id', 'nombres', 'apellidos', 'usuario'],
+              required: false
+            },
+            {
+              model: db.Sucursal,
+              as: 'Sucursal',
+              attributes: ['id', 'nombre'],
+              required: false
+            }
+          ]
+        },
+
+        // =========================
+        // EXAMEN + AREA
+        // =========================
+        {
+          model: db.Examen,
+          as: 'Examen', // ⚠️ Debe existir este alias
+          attributes: ['id', 'nombre', 'tipoMuestra', 'tipoTubo', 'metodo', 'observaciones'],
+          required: false,
+          include: [
+            {
+              model: db.Area,
+              as: 'Area', // ⚠️ Debe existir este alias
+              attributes: ['id', 'nombre'],
+              required: false
+            }
+          ]
+        },
+
+        // =========================
+        // SUBEXAMEN + EXAMEN PADRE + AREA
+        // =========================
+        {
+          model: db.Subexamen,
+          as: 'Subexamen', // ⚠️ Debe existir este alias
+          attributes: ['id', 'nombre'],
+          required: false,
+          include: [
+            {
+              model: db.Examen,
+              as: 'Examen', // ⚠️ alias del subexamen -> Examen padre
+              attributes: ['id', 'nombre', 'tipoMuestra', 'tipoTubo', 'metodo', 'observaciones'],
+              required: false,
+              include: [
+                {
+                  model: db.Area,
+                  as: 'Area',
+                  attributes: ['id', 'nombre'],
+                  required: false
+                }
+              ]
+            }
+          ]
+        },
+
+        // =========================
+        // LABORATORISTA DEL DETALLE (quien editó/completó)
+        // =========================
+        {
+          model: db.Laboratorista,
+          as: 'Laboratorista',
+          attributes: ['id', 'nombres', 'apellidos', 'usuario'],
+          required: false
+        },
+
+        // =========================
+        // SUCURSAL DIRECTA EN DETALLE
+        // =========================
+        {
+          model: db.Sucursal,
+          as: 'Sucursal',
+          attributes: ['id', 'nombre'],
+          required: false
+        }
+      ]
+    });
+
+    if (!detalle) {
+      return res.status(404).json({ success: false, mensaje: 'No se encontró el detalle' });
+    }
+
+    // 🔎 LOG CLAVE
+    console.log('🔎 IDS en detalle:', {
+      id: detalle.id,
+      examenId: detalle.examenId,
+      subexamenId: detalle.subexamenId,
+      esSubexamen: detalle.esSubexamen,
+      nombreExamenPlano: detalle.nombreExamen,
+      medicoSolicitanteDetalle: detalle.medicoSolicitanteDetalle,
+      medicoCabecera: detalle?.Cabecera?.medicoSolicitante,
+      areaExamen: detalle?.Examen?.Area?.nombre,
+      areaSub: detalle?.Subexamen?.Examen?.Area?.nombre,
+      laboratoristaDetalle: detalle?.Laboratorista ? `${detalle.Laboratorista.nombres} ${detalle.Laboratorista.apellidos}` : null,
+      laboratoristaCabecera: detalle?.Cabecera?.Laboratorista ? `${detalle.Cabecera.Laboratorista.nombres} ${detalle.Cabecera.Laboratorista.apellidos}` : null,
+      sucursalDetalle: detalle?.Sucursal?.nombre,
+      sucursalCabecera: detalle?.Cabecera?.Sucursal?.nombre
+    });
+
+    // =========================
+    // NOMBRE EXAMEN / SUBEXAMEN
+    // =========================
+    const esSub = !!detalle.esSubexamen || (!!detalle.subexamenId && !!detalle.Subexamen);
+
+    const nombreExamen =
+      detalle.nombreExamen ||
+      (esSub ? detalle?.Subexamen?.nombre : detalle?.Examen?.nombre) ||
+      (detalle?.Subexamen?.Examen?.nombre ? `${detalle.Subexamen.Examen.nombre} - ${detalle.Subexamen.nombre}` : null) ||
+      'Examen';
+
+    // =========================
+    // ÁREA
+    // =========================
+    const areaNombre =
+      detalle?.Examen?.Area?.nombre ||
+      detalle?.Subexamen?.Examen?.Area?.nombre ||
+      'No especificado';
+
+    // =========================
+    // MÉDICO SOLICITANTE
+    // =========================
+    const medicoSolicitante =
+      detalle.medicoSolicitanteDetalle ||
+      detalle?.Cabecera?.medicoSolicitante ||
+      '';
+
+    // =========================
+    // LABORATORISTA (prioridad: quien editó/completó el detalle)
+    // =========================
+    const laboratorista =
+      detalle?.Laboratorista
+        ? {
+            id: detalle.Laboratorista.id,
+            nombres: detalle.Laboratorista.nombres,
+            apellidos: detalle.Laboratorista.apellidos,
+            usuario: detalle.Laboratorista.usuario
+          }
+        : (detalle?.Cabecera?.Laboratorista
+            ? {
+                id: detalle.Cabecera.Laboratorista.id,
+                nombres: detalle.Cabecera.Laboratorista.nombres,
+                apellidos: detalle.Cabecera.Laboratorista.apellidos,
+                usuario: detalle.Cabecera.Laboratorista.usuario
+              }
+            : null);
+
+    // =========================
+    // SUCURSAL (prioridad: detalle -> cabecera)
+    // =========================
+    const sucursal =
+      detalle?.Sucursal?.nombre ||
+      detalle?.Cabecera?.Sucursal?.nombre ||
+      'Sin sucursal';
+
+    // =========================
+    // PRECIO REAL
+    // =========================
+    const precio = Number(detalle.precioFinal ?? detalle.precioAplicado ?? 0);
+
+    // =========================
+    // RESULTADOS (por si vienen en resultados o parametrosResultados)
+    // =========================
+    const resultados =
+      (detalle.resultados && (typeof detalle.resultados === 'object' ? detalle.resultados : detalle.resultados)) ||
+      (detalle.parametrosResultados && detalle.parametrosResultados) ||
+      null;
+
+    return res.json({
+      success: true,
+      data: {
+        // =========================
+        // PACIENTE
+        // =========================
+        paciente: detalle?.Cabecera?.Paciente
+          ? {
+              id: detalle.Cabecera.Paciente.id,
+              nombres: detalle.Cabecera.Paciente.nombres,
+              apellidos: detalle.Cabecera.Paciente.apellidos,
+              cedula: detalle.Cabecera.Paciente.cedula,
+              edad: detalle.Cabecera.Paciente.edad,
+              sexo: detalle.Cabecera.Paciente.sexo
+            }
+          : null,
+
+        // =========================
+        // CABECERA
+        // =========================
+        cabecera: detalle?.Cabecera
+          ? {
+              id: detalle.Cabecera.id,
+              fechaAsignacion: detalle.Cabecera.fechaAsignacion,
+              estadoPago: detalle.Cabecera.estadoPago,
+              total: detalle.Cabecera.total,
+              saldoPendiente: detalle.Cabecera.saldoPendiente,
+              asignadoPor: detalle.Cabecera.asignadoPor
+            }
+          : null,
+
+        // =========================
+        // MÉDICO
+        // =========================
+        medicoSolicitante,
+
+        // =========================
+        // EXAMEN / SUBEXAMEN
+        // =========================
+        examen: {
+          id: esSub ? detalle?.Subexamen?.id : detalle?.Examen?.id,
+          nombre: nombreExamen,
+          esSubexamen: esSub,
+          area: areaNombre
+        },
+
+        // =========================
+        // INFO TÉCNICA (del examen padre)
+        // =========================
+        informacionTecnica: {
+          tipoMuestra: detalle?.Examen?.tipoMuestra || detalle?.Subexamen?.Examen?.tipoMuestra || 'No especificado',
+          tipoTubo: detalle?.Examen?.tipoTubo || detalle?.Subexamen?.Examen?.tipoTubo || 'No especificado',
+          metodo: detalle?.Examen?.metodo || detalle?.Subexamen?.Examen?.metodo || 'No especificado',
+          observacionesExamen: detalle?.Examen?.observaciones || detalle?.Subexamen?.Examen?.observaciones || 'No especificado'
+        },
+
+        // =========================
+        // DETALLE (precio/estado/resultados)
+        // =========================
+        detalle: {
+          id: detalle.id,
+          estado: detalle.estado || 'pendiente',
+          precio,
+          resultados,
+          observaciones: detalle.observaciones || ''
+        },
+
+        // =========================
+        // LABORATORISTA + SUCURSAL
+        // =========================
+        laboratorista,
+        sucursal,
+
+        // =========================
+        // INFO REGISTRO (lo que tú guardas)
+        // =========================
+        informacionRegistro: {
+          registradoPor: detalle.registradoPor || detalle?.Cabecera?.asignadoPor || 'No especificado',
+          fechaRegistro: detalle.fechaRegistro || detalle.createdAt || null,
+          horaRegistro:
+            detalle.horaRegistro ||
+            (detalle.createdAt ? detalle.createdAt.toTimeString().split(' ')[0] : null),
+          laboratorio: detalle.laboratorio || sucursal
+        }
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error en getDetalleParaPdf:', error);
+    return res.status(500).json({
+      success: false,
+      mensaje: 'Error interno en getDetalleParaPdf',
+      error: error.message
+    });
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const obtenerHistorialPorDetalle = async (req, res) => {
+  try {
+    const pacienteId = Number(req.params.pacienteId);
+    const detalleId = Number(req.params.detalleId);
+
+    console.log('🧪 [HISTORIAL] Params recibidos:', { pacienteId, detalleId });
+
+    if (!pacienteId || !detalleId) {
+      console.log('❌ [HISTORIAL] IDs inválidos');
+      return res.status(400).json({
+        success: false,
+        mensaje: 'pacienteId o detalleId inválido'
+      });
+    }
+
+    // 1) Buscar el detalle para obtener el nombre real (incluye Examen/Subexamen)
+    const detalle = await db.ExamenPacienteDetalle.findByPk(detalleId, {
+      attributes: ['id', 'nombreExamen', 'examenId', 'subexamenId'],
+      include: [
+        { model: db.Examen, as: 'Examen', attributes: ['id', 'nombre'], required: false },
+        { model: db.Subexamen, as: 'Subexamen', attributes: ['id', 'nombre'], required: false }
+      ]
+    });
+
+    if (!detalle) {
+      console.log('❌ [HISTORIAL] No existe detalle');
+      return res.status(404).json({
+        success: false,
+        mensaje: 'No se encontró el detalle del examen'
+      });
+    }
+
+    // ✅ Nombre final con prioridad + normalización (trim + colapsa espacios)
+    const normalizar = (s) => String(s || '').trim().replace(/\s+/g, ' ');
+
+    const nombreFinal =
+      normalizar(detalle.nombreExamen) ||
+      normalizar(detalle.Subexamen?.nombre) ||
+      normalizar(detalle.Examen?.nombre);
+
+    console.log('✅ [HISTORIAL] nombreFinal calculado:', nombreFinal);
+
+    if (!nombreFinal) {
+      console.log('❌ [HISTORIAL] No se pudo determinar nombreFinal');
+      return res.status(400).json({
+        success: false,
+        mensaje: 'No se pudo determinar el nombre del examen/subexamen'
+      });
+    }
+
+    // 2) Buscar historial por nombreExamen del MISMO paciente
+    // ✅ Opción recomendada: LIKE flexible para evitar diferencias pequeñas
+    const historial = await db.ExamenPacienteDetalle.findAll({
+      where: {
+        nombreExamen: { [Op.iLike]: `%${nombreFinal}%` }
+        // Si quieres exacto estricto (pero puede fallar por espacios):
+        // nombreExamen: { [Op.iLike]: nombreFinal }
+        // o exacto total:
+        // nombreExamen: { [Op.eq]: nombreFinal }
+      },
+      include: [
+        {
+          model: db.ExamenPaciente,
+          as: 'Cabecera',
+          required: true,
+          attributes: ['id', 'pacienteId', 'fechaAsignacion'],
+          where: { pacienteId }
+        }
+      ],
+      attributes: [
+        'id',
+        'examenPacienteId',
+        'examenId',
+        'subexamenId',
+        'nombreExamen',
+        'estado',
+        'resultados',
+        'parametrosResultados',
+        'createdAt'
+      ],
+      order: [[{ model: db.ExamenPaciente, as: 'Cabecera' }, 'fechaAsignacion', 'ASC']]
+    });
+
+    console.log(`✅ [HISTORIAL] Registros encontrados: ${historial.length}`);
+
+    // Debug rápido: muestra 3 primeras filas
+    console.log(
+      '🔎 [HISTORIAL] Primeros registros:',
+      historial.slice(0, 3).map(h => ({
+        id: h.id,
+        nombreExamen: h.nombreExamen,
+        fechaAsignacion: h.Cabecera?.fechaAsignacion
+      }))
+    );
+
+    const payload = {
+      success: true,
+      nombreExamen: nombreFinal,
+      total: historial.length,
+      historial: historial.map(h => ({
+        id: h.id,
+        examenPacienteId: h.examenPacienteId,
+        examenId: h.examenId,
+        subexamenId: h.subexamenId,
+        nombreExamen: h.nombreExamen,
+        estado: h.estado,
+        resultados: h.resultados,
+        parametrosResultados: h.parametrosResultados,
+        fechaAsignacion: h.Cabecera?.fechaAsignacion || null,
+        createdAt: h.createdAt
+      }))
+    };
+
+    console.log('📦 [HISTORIAL] Respuesta enviada:', {
+      success: payload.success,
+      nombreExamen: payload.nombreExamen,
+      total: payload.total
+    });
+
+    return res.json(payload);
+
+  } catch (error) {
+    console.error('❌ [HISTORIAL] Error:', error);
+    return res.status(500).json({
+      success: false,
+      mensaje: 'Error interno obteniendo historial',
+      error: error.message
+    });
+  }
+};
+
+
 
 
 module.exports = {
@@ -3636,9 +4005,7 @@ module.exports = {
 
   // 📄 PDF (individual y completo)
   generarPDFResultados,
-  generarPDFCompleto,
-  guardarPdfGenerado,
-  verificarEstadoPdf,
+ 
   guardarPdfResultado,
     // (si esta función es la "oficial" que quieres usar)
   generarPdfAutomatico,
@@ -3677,6 +4044,12 @@ module.exports = {
   // 🔧 OTROS ENDPOINTS
   cambiarEstado,
   actualizarAreaEspecializada,
+    getExamenesPendientes, // ✅ NUEVO - AGREGAR ESTA LÍNEA
+getSucursales,
+   obtenerDetalleExamen,  // ESTA ERA LA FALTANTE
+  obtenerHistorialPorDetalle,
+  getExamenesPendientes,
+  getDetalleParaPdf 
 };
 
 console.log('✅ Controlador de exámenes exportado correctamente con todas las funciones');

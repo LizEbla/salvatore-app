@@ -259,6 +259,7 @@ exports.crear = async (req, res) => {
 };
 
 // ✅ CONTROLADOR CORREGIDO: Actualizar promoción
+// ✅ CONTROLADOR: Actualizar promoción (permite editar sin reenviar examenesDetalles)
 exports.actualizar = async (req, res) => {
   const t = await db.sequelize.transaction();
   try {
@@ -272,39 +273,56 @@ exports.actualizar = async (req, res) => {
       return res.status(404).json({ mensaje: 'Promoción no encontrada' });
     }
 
-    // ✅ VALIDAR DATOS REQUERIDOS
-    if (!examenesDetalles || !Array.isArray(examenesDetalles) || examenesDetalles.length === 0) {
+    // ✅ AJUSTAR FECHAS SOLO SI VIENEN
+    let fechaInicio = promo.fechaInicio;
+    let fechaFin = promo.fechaFin;
+
+    if (datosPromocion.fechaInicio && datosPromocion.fechaFin) {
+      const ajustadas = ajustarFechas(datosPromocion.fechaInicio, datosPromocion.fechaFin);
+      fechaInicio = ajustadas.inicio;
+      fechaFin = ajustadas.fin;
+    }
+
+    // ✅ 1) Actualizar campos básicos (si no mandan algo, conserva)
+    await promo.update({
+      nombre: datosPromocion.nombre ?? promo.nombre,
+      descripcion: datosPromocion.descripcion ?? promo.descripcion,
+      tipo: datosPromocion.tipo ?? promo.tipo,
+      valor: (datosPromocion.valor !== undefined) ? (parseFloat(datosPromocion.valor) || 0) : promo.valor,
+      fechaInicio,
+      fechaFin,
+      examenPrincipalId: (datosPromocion.examenPrincipalId !== undefined)
+        ? (datosPromocion.examenPrincipalId || null)
+        : promo.examenPrincipalId,
+      activa: (datosPromocion.activa !== undefined) ? datosPromocion.activa : promo.activa
+    }, { transaction: t });
+
+    // ✅ 2) Si NO enviaron examenesDetalles, NO tocar detalles ni relaciones
+    if (examenesDetalles === undefined || examenesDetalles === null) {
+      await t.commit();
+      const promoActualizada = await obtenerPromocionCompleta(id);
+      return res.json(promoActualizada);
+    }
+
+    // ✅ 3) Si enviaron examenesDetalles, ahí sí validar
+    if (!Array.isArray(examenesDetalles) || examenesDetalles.length === 0) {
       await t.rollback();
-      return res.status(400).json({ 
-        mensaje: 'Debe incluir al menos un examen en la promoción' 
+      return res.status(400).json({
+        mensaje: 'Debe incluir al menos un examen en la promoción'
       });
     }
 
-    // ✅ CALCULAR NUEVOS PRECIOS
-    const { precioTotalIndividual, precioTotalPromocion, ahorroTotal } = 
-      calcularPreciosPromocion(datosPromocion.tipo, datosPromocion.valor, examenesDetalles);
+    // ✅ 4) Recalcular precios con los nuevos detalles
+    const { precioTotalIndividual, precioTotalPromocion, ahorroTotal } =
+      calcularPreciosPromocion(promo.tipo, promo.valor, examenesDetalles);
 
-    // ✅ AJUSTAR FECHAS
-    const { inicio: fechaInicio, fin: fechaFin } = ajustarFechas(
-      datosPromocion.fechaInicio, 
-      datosPromocion.fechaFin
-    );
-
-    // 1) ACTUALIZAR PROMOCIÓN
     await promo.update({
-      nombre: datosPromocion.nombre,
-      descripcion: datosPromocion.descripcion,
-      tipo: datosPromocion.tipo,
-      valor: parseFloat(datosPromocion.valor) || 0,
-      fechaInicio,
-      fechaFin,
-      examenPrincipalId: datosPromocion.examenPrincipalId || null,
       precioTotalIndividual,
       precioTotalPromocion,
       ahorroTotal
     }, { transaction: t });
 
-    // 2) ELIMINAR DETALLES EXISTENTES Y CREAR NUEVOS
+    // ✅ 5) Reemplazar detalles
     await db.PromocionExamen.destroy({
       where: { promocionId: id },
       transaction: t
@@ -312,10 +330,10 @@ exports.actualizar = async (req, res) => {
 
     const detallesParaCrear = examenesDetalles.map(detalle => {
       const precioIndividual = parseFloat(detalle.precioIndividual) || 0;
-      
+
       const { precioDescuento, ahorro } = calcularPrecioExamen(
-        datosPromocion.tipo,
-        datosPromocion.valor,
+        promo.tipo,
+        promo.valor,
         detalle,
         examenesDetalles
       );
@@ -333,29 +351,28 @@ exports.actualizar = async (req, res) => {
     });
 
     await db.PromocionExamen.bulkCreate(detallesParaCrear, { transaction: t });
-    console.log(`✅ ${detallesParaCrear.length} detalles actualizados`);
 
-    // 3) ACTUALIZAR ASOCIACIÓN DE EXAMENES
-    const examenesIds = examenesDetalles.map(detalle => detalle.examenId).filter(id => id);
+    // ✅ 6) Actualizar relación N:M (Examenes)
+    const examenesIds = examenesDetalles.map(d => d.examenId).filter(Boolean);
     if (examenesIds.length > 0) {
       await promo.setExamenes(examenesIds, { transaction: t });
     }
 
     await t.commit();
 
-    // OBTENER PROMOCIÓN ACTUALIZADA
     const promoActualizada = await obtenerPromocionCompleta(id);
     res.json(promoActualizada);
 
   } catch (error) {
     await t.rollback();
     console.error('💥 Error al actualizar promoción:', error);
-    res.status(500).json({ 
-      mensaje: 'Error al actualizar promoción', 
-      detalle: error.message 
+    res.status(500).json({
+      mensaje: 'Error al actualizar promoción',
+      detalle: error.message
     });
   }
 };
+
 
 // ✅ MANTENER LOS DEMÁS MÉTODOS SIN CAMBIOS (listar, obtenerPorId, eliminar, activas, etc.)
 exports.listar = async (_req, res) => {

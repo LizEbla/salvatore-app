@@ -115,51 +115,7 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
 
-    // ✅ CAMPOS PARA PDF Y FIRMA
-    pdfGenerado: {
-      type: DataTypes.BLOB('long'),
-      allowNull: true
-    },
-    fechaGeneracionPdf: {
-      type: DataTypes.DATE,
-      allowNull: true
-    },
-    pdfPendiente: { // ✅ NUEVO - para controlar generación de PDF
-      type: DataTypes.BOOLEAN,
-      defaultValue: false
-    },
-    firmaElectronica: {
-      type: DataTypes.JSON,
-      allowNull: true
-    },
-    fechaFirma: {
-      type: DataTypes.DATE,
-      allowNull: true
-    },
-    laboratoristaFirmaId: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-      references: {
-        model: 'Laboratoristas',
-        key: 'id'
-      }
-    },
-    firmaVisual: {
-      type: DataTypes.JSON,
-      allowNull: true
-    },
-    estadoFirma: { // ✅ NUEVO - para controlar estado de firma
-      type: DataTypes.STRING(20),
-      defaultValue: 'no_firmado',
-      validate: {
-        isIn: [['no_firmado', 'firmado', 'pendiente_firma']]
-      }
-    },
-
-    pdfFirmado: {
-  type: DataTypes.STRING,
-  allowNull: true
-},
+    
 
     
     // ✅ CAMPOS DE REGISTRO - AGREGAR ESTOS
@@ -189,6 +145,8 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DATE,
       allowNull: true
     },
+
+    
 
     createdAt: {
       type: DataTypes.DATE,

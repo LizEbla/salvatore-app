@@ -17,6 +17,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
     },
 
+    examenPacienteId: {
+  type: DataTypes.INTEGER,
+  allowNull: true
+},
+
     monto: {
       type: DataTypes.DECIMAL(10,2),
       allowNull: false,
@@ -80,6 +85,12 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'laboratoristaId',
       as: 'Laboratorista'
     });
+
+    Pago.belongsTo(models.ExamenPaciente, {
+  foreignKey: 'examenPacienteId',
+  as: 'ExamenPaciente'
+});
+
 
   };
 

@@ -1,105 +1,60 @@
-// routes/vista-paciente.routes.js - VERSIÓN CORREGIDA
+// backend/routes/vista-paciente.routes.js
 const express = require('express');
 const router = express.Router();
 
-// Middleware de autenticación
+const vistaPacienteController = require('../controllers/vista-paciente.controller');
 const verificarAuth = require('../middleware/auth');
 
-// Controlador
-const vistaPacienteController = require('../controllers/vista-paciente.controller');
+console.log('🧩 vistaPacienteController keys:', Object.keys(vistaPacienteController));
 
-// Modelos correctos desde Sequelize
-const db = require('../models');
-const { Paciente, ExamenPaciente, Examen } = db;
-
-// Middleware: Requiere autenticación
-router.use(verificarAuth);
-
-// Restringir acceso a pacientes exclusivamente
-router.use((req, res, next) => {
-  if (req.usuario.tipoUsuario !== 'paciente' && req.usuario.tipoUsuario !== 'usuario_simulado') {
-    return res.status(403).json({ message: '⚠️ Solo pacientes pueden acceder a esta vista' });
+function asegurarFn(nombre) {
+  const fn = vistaPacienteController[nombre];
+  if (typeof fn !== 'function') {
+    console.log(`❌ CONTROLADOR SIN FUNCIÓN: ${nombre} =>`, fn);
+    return (req, res) =>
+      res.status(500).json({
+        message: `Función no implementada en vista-paciente.controller.js: ${nombre}`
+      });
   }
-  next();
-});
+  return fn;
+}
 
-/* =====================================
-   PERFIL DEL PACIENTE
-===================================== */
-router.get('/perfil', async (req, res) => {
-  try {
-    const paciente = await Paciente.findByPk(req.usuario.id, {
-      attributes: ['id','nombres','apellidos','cedula','sexo','edad']
-    });
-    res.json(paciente);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+/* =========================
+   DASHBOARD / HISTORIAL
+========================= */
+router.get('/dashboard', verificarAuth, asegurarFn('obtenerDashboardPaciente'));
 
-/* =====================================
-   DEUDAS
-===================================== */
-router.get('/deudas', async (req, res) => {
-  try {
-    const registros = await ExamenPaciente.findAll({
-      where: { pacienteId: req.usuario.id }
-    });
+// ✅ tu frontend estaba llamando /historial -> lo creamos como alias
+router.get('/historial', verificarAuth, asegurarFn('obtenerHistorialAgrupado'));
 
-    const total = registros.reduce((sum, r) => sum + (Number(r.saldoPendiente) || 0), 0);
+// ✅ mantén el original por si lo usas en otros lados
+router.get('/historial-agrupado', verificarAuth, asegurarFn('obtenerHistorialAgrupado'));
 
-    res.json({ totalPendiente: total, registros });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+/* =========================
+   DATOS PARA PDFMAKE (SIN PDF GUARDADO)
+========================= */
 
-/* =====================================
-   MIS EXÁMENES
-===================================== */
-router.get('/mis-examenes', async (req, res) => {
-  try {
-    const examenes = await ExamenPaciente.findAll({
-      where: { pacienteId: req.usuario.id },
-      include: [{ model: Examen, as: 'Examen', attributes: ['id','nombre','precio'] }],
-      order: [['fechaAsignacion','DESC']]
-    });
-    res.json(examenes);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// ✅ tu frontend estaba llamando /examenes/:id/datos-completos
+/*router.get(
+  '/examenes/:detalleId/datos-completos',
+  verificarAuth,
+  asegurarFn('obtenerDatosExamenCompleto')
+);*/
 
-/* =====================================
-   DASHBOARD
-===================================== */
-router.get('/dashboard', vistaPacienteController.obtenerDashboardPaciente);
+router.get('/examenes/:detalleId/datos-completos', verificarAuth, vistaPacienteController.obtenerDatosExamenCompleto);
 
-/* =====================================
-   HISTORIAL AGRUPADO
-===================================== */
-router.get('/historial', vistaPacienteController.obtenerHistorialAgrupado);
+// ✅ mantén el endpoint antiguo también (alias)
+router.get(
+  '/examen-completo/:detalleId',
+  verificarAuth,
+  asegurarFn('obtenerDatosExamenCompleto')
+);
 
-/* =====================================
-   PDFS
-===================================== */
-router.get('/orden/:id/pdf', vistaPacienteController.generarPdfOrden);
-router.get('/ordenes/fecha/:fecha/pdf-datos', vistaPacienteController.generarPdfPorFecha);
-router.get('/ordenes/fecha/:fecha/pdfs-existentes', vistaPacienteController.obtenerPdfsExistentesPorFecha);
-router.get('/pdf/individual/:examenId', vistaPacienteController.generarPdfIndividual);
+/* =========================
+   OPCIONAL (si aún lo usas)
+========================= */
+router.get('/pdf/por-fecha/:fecha', verificarAuth, asegurarFn('generarPdfPorFecha'));
+router.get('/pdf/estado/:examenId', verificarAuth, asegurarFn('verificarEstadoPdf'));
+router.get('/pdf/orden/:id', verificarAuth, asegurarFn('generarPdfOrden'));
 
-// Agregar esta línea en las rutas de PDFs
-router.get('/pdf/estado/:examenId', vistaPacienteController.verificarEstadoPdf);
-
-/* =====================================
-   DATOS COMPLETOS DEL EXAMEN
-===================================== */
-router.get('/examenes/:detalleId/datos-completos', vistaPacienteController.obtenerDatosExamenCompleto);
-
-/* =====================================
-   DIAGNÓSTICO
-===================================== */
-router.get('/diagnostico-pdfs', vistaPacienteController.diagnosticoPdfs);
-
-// Exportar
 module.exports = router;

@@ -45,7 +45,6 @@ module.exports = {
       if (!examen) return res.status(404).json({ success: false, message: "Examen no encontrado" });
 
       // PDF generado previamente en tu proceso actual
-      const pdfBase64 = examen.pdfGenerado.toString("base64");
 
       res.json({
         success: true,
@@ -79,7 +78,6 @@ module.exports = {
       /** =============================
        * 1️⃣ Cargar PDF ya generado
        * ============================= */
-      const pdfBytes = examen.pdfGenerado;
       const pdfDoc = await pdfLib.PDFDocument.load(pdfBytes);
 
       /** =============================
@@ -107,7 +105,6 @@ module.exports = {
       /** =============================
        * 4️⃣ GUARDAR FIRMA EN BD
        * ============================= */
-      examen.pdfGenerado = Buffer.from(pdfFirmadoBytes);
       examen.firmaElectronica = {
         nombreFirmante: certificado.subject.getField("CN").value,
         emisor: certificado.issuer.getField("CN").value,

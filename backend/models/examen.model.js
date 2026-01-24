@@ -8,6 +8,8 @@ module.exports = (sequelize, DataTypes) => {
     tipoTubo: { type: DataTypes.STRING(255), allowNull: true },
     tiempoEntrega: { type: DataTypes.STRING(255), allowNull: true },
     observaciones: { type: DataTypes.TEXT },
+    area_id: { type: DataTypes.INTEGER, allowNull: true },
+
   }, {
     tableName: 'Examenes' // Asegúrate que coincida con la referencia
   });

@@ -14,14 +14,16 @@ module.exports = (sequelize, DataTypes) => {
         key: 'id'
       }
     },
-    laboratoristaId: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: {
-        model: 'Laboratoristas',
-        key: 'id'
-      }
-    },
+    // models/examenPaciente.model.js - MODIFICAR
+laboratoristaId: {
+  type: DataTypes.INTEGER,
+  allowNull: true, // ✅ CAMBIAR de false a true
+  references: {
+    model: 'Laboratoristas',
+    key: 'id'
+  },
+  comment: 'Puede ser null para administradores que asignan'
+},
     fechaAsignacion: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -64,6 +66,23 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT,
       allowNull: true
     },
+
+    // En models/examenPaciente.model.js
+usuarioAsignadorId: {
+  type: DataTypes.INTEGER,
+  allowNull: false,
+  comment: 'ID del usuario que asignó (puede ser laboratorista o administrador)'
+},
+tipoUsuarioAsignador: {
+  type: DataTypes.ENUM('laboratorista', 'administrador', 'superadmin'),
+  allowNull: false,
+  defaultValue: 'laboratorista'
+},
+asignadoPor: {
+  type: DataTypes.STRING(255),
+  allowNull: true,
+  comment: 'Nombre completo del usuario que asignó'
+},
     sucursalId: {
       type: DataTypes.INTEGER,
       allowNull: true,
@@ -72,6 +91,7 @@ module.exports = (sequelize, DataTypes) => {
         key: 'id'
       }
     },
+    
     createdAt: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -127,6 +147,10 @@ module.exports = (sequelize, DataTypes) => {
     });
 
 
+ExamenPaciente.hasMany(models.Pago, {
+  foreignKey: 'examenPacienteId',
+  as: 'Pagos'
+});
 
 
     

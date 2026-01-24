@@ -1,3 +1,5 @@
+//models/sucursal.model.js
+
 module.exports = (sequelize, DataTypes) => {
   const Sucursal = sequelize.define('Sucursal', {
     nombre: { type: DataTypes.STRING(100), allowNull: false, unique: true },
