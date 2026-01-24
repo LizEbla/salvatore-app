@@ -1,21 +1,22 @@
 const express = require('express');
 const router = express.Router();
 
-const usuarios = [
-  { username: 'admin', password: 'admin123', rol: 'administrador' },
-  { username: 'lab', password: 'lab123', rol: 'laboratorista' },
-  { username: 'root', password: 'root123', rol: 'programador' }
-];
+const authController = require('../controllers/auth.controller');
+const verificarAuth = require('../middleware/auth');
 
-router.post('/login', (req, res) => {
-  const { username, password } = req.body;
-  const usuario = usuarios.find(u => u.username === username && u.password === password);
+// LOGIN LAB + ADMIN + SUPERADMIN (CON SUCURSAL)
+router.post('/login', authController.login);
 
-  if (usuario) {
-    res.json({ token: 'fake-jwt-token', rol: usuario.rol });
-  } else {
-    res.status(401).json({ message: 'Credenciales incorrectas' });
-  }
-});
+// LOGIN PACIENTE
+router.post('/login-paciente', authController.loginPaciente);
+
+// VERIFICAR TOKEN
+router.get('/verificar', verificarAuth, authController.verificarToken);
+
+// 🔄 CAMBIAR SUCURSAL (ADMINISTRADORES)
+router.post('/cambiar-sucursal', verificarAuth, authController.cambiarSucursal);
+
+// 🔍 DIAGNÓSTICO DE SESIÓN
+router.get('/diagnostico', verificarAuth, authController.diagnosticarSesion);
 
 module.exports = router;
