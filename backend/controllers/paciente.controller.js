@@ -466,43 +466,77 @@ const crearPaciente = async (req, res) => {
   console.log('📌 Registro de paciente iniciado');
   console.log('📦 Datos recibidos:', req.body);
 
-  const {
-  nombres, apellidos, cedula, fechaNacimiento, edad,
-  estadoSalud, direccion, telefono, correo,
-  alergias, usuario, claveAcceso, sexo
-} = req.body;
-
-const contrasena = claveAcceso; // ✅ usar misma clave para login y visible
-
-
   try {
-    // 1️⃣ Verificar duplicados
+    const {
+      nombres, apellidos, cedula, fechaNacimiento, edad,
+      estadoSalud, direccion, telefono, correo,
+      alergias, usuario, claveAcceso, sexo
+    } = req.body;
+
+    // ✅ 0) Validaciones mínimas
+    if (!nombres || !apellidos || !cedula || !fechaNacimiento) {
+      return res.status(400).json({
+        mensaje: 'Faltan campos obligatorios: nombres, apellidos, cedula, fechaNacimiento'
+      });
+    }
+
+    // ✅ 1) Usuario y clave por defecto si no llegan (según tu requerimiento)
+    const usuarioFinal = (usuario && String(usuario).trim()) ? String(usuario).trim() : String(cedula).trim();
+
+    // claveAcceso: si no llega, se arma ddmmyyyy desde fechaNacimiento
+    const claveAccesoFinal = (claveAcceso && String(claveAcceso).trim())
+      ? String(claveAcceso).trim()
+      : (() => {
+          const d = new Date(fechaNacimiento);
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = String(d.getFullYear());
+          return `${dd}${mm}${yyyy}`;
+        })();
+
+    const contrasena = claveAccesoFinal;
+
+    // ✅ 2) Verificar duplicados (cédula o usuario)
     const existe = await Paciente.findOne({
-      where: { [Op.or]: [{ cedula }, { usuario }] }
+      where: { [Op.or]: [{ cedula }, { usuario: usuarioFinal }] }
     });
 
     if (existe) {
       return res.status(409).json({ mensaje: 'El paciente ya está registrado.' });
     }
 
-    // 2️⃣ Contraseña visible
-    const claveAcceso = contrasena;
-
-    // 3️⃣ Contraseña encriptada
+    // ✅ 3) Encriptar contraseña
     const contrasenaHash = await bcrypt.hash(contrasena, 10);
 
-    // 4️⃣ Usuario que registró
-    let laboratoristaId = req.usuario ? req.usuario.id : null;
-let nombreLaboratorista = req.usuario ? `${req.usuario.nombres} ${req.usuario.apellidos}` : null;
+    // ✅ 4) Tomar usuario autenticado desde el middleware (NO req.usuario)
+    // Ajustado a tu caso: intenta varios posibles campos
+    const auth = req.user || req.usuario || req.auth || null;
 
+    const laboratoristaId =
+      auth?.id ||
+      auth?.laboratoristaId ||
+      null;
 
-    // 5️⃣ Crear paciente
+    const nombreLaboratorista =
+      auth?.nombres && auth?.apellidos ? `${auth.nombres} ${auth.apellidos}` :
+      auth?.nombre ? auth.nombre :
+      auth?.usuario ? auth.usuario :
+      null;
+
+    console.log('🧪 auth payload:', auth);
+    console.log('🧪 laboratoristaId:', laboratoristaId);
+    console.log('🧪 nombreLaboratorista:', nombreLaboratorista);
+
+    // ✅ 5) Crear paciente
     const nuevoPaciente = await Paciente.create({
       nombres, apellidos, cedula, fechaNacimiento, edad,
       estadoSalud, direccion, telefono, correo,
-      alergias, usuario, sexo,
-      claveAcceso,            // ✅ visible
-      contrasenaHash,         // ✅ encriptada
+      alergias, sexo,
+
+      usuario: usuarioFinal,
+      claveAcceso: claveAccesoFinal,     // ✅ visible
+      contrasenaHash,                    // ✅ encriptada
+
       laboratoristaId,
       nombreLaboratorista
     });
@@ -514,10 +548,13 @@ let nombreLaboratorista = req.usuario ? `${req.usuario.nombres} ${req.usuario.ap
 
   } catch (error) {
     console.error('❌ Error al registrar paciente:', error);
-    res.status(500).json({ mensaje: 'Error al registrar paciente' });
+    return res.status(500).json({
+      mensaje: 'Error al registrar paciente',
+      error: error.message
+    });
   }
-
 };
+
 
 
 const getExamenesPendientes = async (req, res) => {

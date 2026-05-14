@@ -90,23 +90,57 @@ app.get('/api/health', (req, res) => {
 });
 
 // Ruta de diagnóstico
+// ✅ Ruta de diagnóstico: lista rutas directas + rutas de routers montados
 app.get('/api/debug/routes', (req, res) => {
-  const routes = [];
-  
-  app._router.stack.forEach((middleware) => {
-    if (middleware.route) {
-      routes.push({
-        path: middleware.route.path,
-        methods: Object.keys(middleware.route.methods)
-      });
+  const rutas = [];
+
+  const stack = app._router?.stack || [];
+
+  function extraerBasePath(layer) {
+    // Intenta obtener el prefijo montado (/api/pacientes, etc.)
+    // No siempre es perfecto, pero ayuda bastante.
+    if (!layer.regexp) return '';
+    const match = layer.regexp.toString().match(/^\/\^\\\/(.+?)\\\/\?\(\?=\\\/\|\$\)\/i$/);
+    if (!match) return '';
+    return '/' + match[1].replace(/\\\//g, '/');
+  }
+
+  function recorrer(stackInterno, prefijo = '') {
+    stackInterno.forEach((layer) => {
+      // Rutas directas
+      if (layer.route) {
+        const path = prefijo + layer.route.path;
+        const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase());
+        rutas.push({ path, methods });
+      }
+
+      // Routers montados (app.use)
+      if (layer.name === 'router' && layer.handle?.stack) {
+        const base = extraerBasePath(layer) || prefijo;
+        recorrer(layer.handle.stack, base);
+      }
+    });
+  }
+
+  recorrer(stack, '');
+
+  // Quita duplicados
+  const unique = [];
+  const seen = new Set();
+  for (const r of rutas) {
+    const key = `${r.methods.join(',')}:${r.path}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(r);
     }
-  });
-  
+  }
+
   res.json({
-    totalRoutes: routes.length,
-    routes: routes.slice(0, 20) // Mostrar solo las primeras 20
+    totalRoutes: unique.length,
+    routes: unique
   });
 });
+
 
 // ========================
 // 4. MANEJO DE ERRORES
